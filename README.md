@@ -1,89 +1,83 @@
-# 🤖 WhatsApp Bot AI Zoom Generator (Scan QR Code via Terminal)
+# 🤖 WhatsApp Bot AI Zoom Generator (Hosting Gratis 24 Jam di Koyeb)
 
-Bot WhatsApp yang menggunakan **nomor WhatsApp pribadi Anda sendiri** dengan metode **Scan QR Code langsung di terminal** (menggunakan library `@whiskeysockets/baileys`).
+Bot WhatsApp berbasis **Baileys (`@whiskeysockets/baileys`)** dengan integrasi **Google Gemini AI** dan **Zoom API (Server-to-Server OAuth)** yang di-hosting **100% GRATIS SELAMANYA** di **[Koyeb](https://www.koyeb.com/)** tanpa perlu kartu kredit!
 
-### ✨ Keunggulan Metode Ini:
-- ❌ **TIDAK PERLU Meta for Developers / Facebook**
-- ❌ **TIDAK PERLU Portofolio Bisnis / KTP / Iklan**
-- ❌ **TIDAK PERLU nomor telepon baru**
-- ✅ **Cukup Scan QR Code** langsung dari HP ke terminal!
-- ✅ Didukung **Google Gemini AI** untuk ekstraksi jadwal meeting otomatis
-- ✅ Terintegrasi **Zoom REST API (Server-to-Server OAuth)** untuk membuat link meeting
-- ✅ Bisa dijalankan di **Laptop Lokal** maupun di-hosting di **Railway / Koyeb / VPS**
+### ✨ Mengapa Metode Ini Terbaik untuk Anda?
+- ❌ **TIDAK PERLU Meta Developer / Facebook** (Bebas dari error *"Akses Iklan Dibatasi"*).
+- ❌ **TIDAK PERLU Kartu Kredit / Biaya Bulanan** (Koyeb menyediakan 1 server Eco gratis selamanya).
+- ❌ **TIDAK PERLU Khawatir Laptop Mati** (Bot hidup 24 jam nonstop di cloud Koyeb).
+- ✅ **Scan QR Code langsung dari layar Logs Koyeb** menggunakan WhatsApp di HP Anda.
 
 ---
 
-## 📁 Struktur Folder Proyek
+## 📁 Struktur File
 
 ```
 BOT AI ZOOM/
-├── bot.js                     # Script utama bot WhatsApp (Baileys + QR Terminal)
+├── bot.js                     # Server utama bot (Baileys + Health check Koyeb)
 ├── src/
 │   ├── services/
-│   │   ├── gemini.js          # Integrasi Google Gemini API (Structured JSON)
-│   │   └── zoom.js            # Integrasi Zoom API (Server-to-Server OAuth)
+│   │   ├── gemini.js          # Google Gemini AI Structured Output
+│   │   └── zoom.js            # Zoom API (Server-to-Server OAuth)
 │   └── utils/
-│       └── datetime.js        # Helper zona waktu WIB & formatting tanggal Indonesia
-├── .env.example               # Template environment variables (hanya butuh Gemini & Zoom)
-├── .gitignore                 # Mengabaikan node_modules, auth_info_baileys, .env
-├── package.json               # Dependensi & script ("npm start")
-└── README.md                  # Panduan lengkap setup
+│       └── datetime.js        # Helper zona waktu WIB & formatting tanggal
+├── .env.example               # Template environment variables
+├── package.json               # Konfigurasi Node.js & dependencies
+└── README.md                  # Panduan setup & deployment
 ```
 
 ---
 
-## ⚙️ Hanya 2 Kredensial yang Dibutuhkan
+## ⚙️ Variabel yang Dibutuhkan (Hanya 2 Layanan)
 
-Buka file `.env` di folder proyek Anda:
-
-### 1. Google Gemini API (Gratis)
-- Buka [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-- Klik **Create API Key**
-- Masukkan ke `.env`:
-  ```env
-  GEMINI_API_KEY=AIzaSy...
-  ```
-
-### 2. Zoom API (Server-to-Server OAuth) (Gratis)
-- Buka [https://marketplace.zoom.us/](https://marketplace.zoom.us/)
-- Login akun Zoom Anda
-- Klik **Develop** -> **Build App** -> pilih kartu **Server-to-Server OAuth** -> klik **Create**
-- Pada tab **App Credentials**, salin:
-  ```env
-  ZOOM_ACCOUNT_ID=...
-  ZOOM_CLIENT_ID=...
-  ZOOM_CLIENT_SECRET=...
-  ```
-- Pada tab **Scopes**, klik **Add Scopes**, centang **`meeting:write:admin`** (atau `meeting:write`).
-- Lanjutkan ke tab **Activation**, klik **Activate your app**.
+| Variabel | Wajib? | Keterangan & Sumber |
+|---|:---:|---|
+| `GEMINI_API_KEY` | **Ya** | API Key Gratis dari [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| `ZOOM_ACCOUNT_ID` | **Ya** | Account ID dari [Zoom App Marketplace](https://marketplace.zoom.us/) (App Server-to-Server OAuth) |
+| `ZOOM_CLIENT_ID` | **Ya** | Client ID dari Zoom Marketplace |
+| `ZOOM_CLIENT_SECRET` | **Ya** | Client Secret dari Zoom Marketplace |
+| `DEFAULT_TIMEZONE` | Opsional | Zona waktu (default: `Asia/Jakarta`) |
 
 ---
 
-## 🚀 Cara Menjalankan Bot di Laptop
+## 🚀 Panduan Deploy ke Koyeb (Langkah Demi Langkah)
 
-1. Pastikan file `.env` sudah diisi dengan API Key Gemini dan Zoom.
-2. Jalankan perintah ini di terminal:
+### Langkah 1: Push Proyek Ini ke GitHub Anda
+1. Buat repository baru di [GitHub](https://github.com/new), misalnya beri nama: `wa-bot-zoom`.
+2. Jalankan perintah ini di terminal Anda (ganti `USERNAME` dengan username GitHub Anda):
    ```bash
-   npm start
+   git remote add origin https://github.com/USERNAME/wa-bot-zoom.git
+   git branch -M main
+   git push -u origin main
    ```
-3. Terminal akan langsung menampilkan **QR Code**!
-4. Buka WhatsApp di HP Anda:
-   - Ketuk titik tiga (Android) atau Pengaturan (iPhone)
-   - Pilih **Perangkat Tertaut (Linked Devices)**
-   - Ketuk **Tautkan Perangkat (Link a Device)**
-   - Arahkan kamera HP ke QR Code yang muncul di terminal.
-5. Begitu terhubung, bot akan menampilkan pesan:  
-   `✅ WHATSAPP BOT BERHASIL TERHUBUNG & SIAP DIGUNAKAN!`
 
 ---
 
-## 🌐 Cara Hosting 24 Jam di Railway (Tanpa Tergantung Laptop)
+### Langkah 2: Buat Service di Koyeb
+1. Buka [https://app.koyeb.com](https://app.koyeb.com) dan login menggunakan akun **GitHub** Anda.
+2. Klik tombol **Create Service**.
+3. Pilih sumber: **GitHub**.
+4. Pilih repository `wa-bot-zoom` yang baru saja Anda push.
+5. Pada bagian **Instance Type**:
+   - Pilih **Eco Free** *(Gratis selamanya / $0/month)*.
+6. Pada bagian **Environment Variables**, klik **Add Variable** dan masukkan:
+   - `GEMINI_API_KEY` : (API key Gemini Anda)
+   - `ZOOM_ACCOUNT_ID` : (Account ID Zoom Anda)
+   - `ZOOM_CLIENT_ID` : (Client ID Zoom Anda)
+   - `ZOOM_CLIENT_SECRET` : (Client Secret Zoom Anda)
+   - `DEFAULT_TIMEZONE` : `Asia/Jakarta`
+7. Klik tombol **Deploy** di bagian bawah.
 
-Jika Anda ingin bot tetap aktif 24 jam meskipun laptop mati:
-1. Upload folder proyek ini ke repository **GitHub** pribadi Anda.
-2. Buka [https://railway.app](https://railway.app) lalu login dengan akun GitHub Anda.
-3. Klik **New Project** -> **Deploy from GitHub repo** -> Pilih repository bot ini.
-4. Masuk ke tab **Variables** di Railway, masukkan variabel dari `.env` Anda (`GEMINI_API_KEY`, `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`).
-5. Buka tab **Deployments** -> Klik **View Logs / Terminal Logs**.
-6. **QR Code akan otomatis muncul di layar logs Railway Anda!**
-7. Scan QR tersebut dengan HP Anda satu kali saja. Sesi login akan tersimpan dan bot akan aktif 24 jam nonstop di Railway!
+---
+
+### Langkah 3: Scan QR Code di Koyeb Logs
+1. Setelah proses build selesai, buka tab **Logs** / **Console** di dashboard service Koyeb Anda.
+2. **Gambar QR Code akan langsung tercetak jelas di layar log Koyeb!**
+3. Ambil HP Anda, buka WhatsApp:
+   - Ketuk titik tiga (Android) atau Pengaturan (iPhone).
+   - Pilih **Perangkat Tertaut (Linked Devices)**.
+   - Ketuk **Tautkan Perangkat (Link a Device)**.
+   - Arahkan kamera HP ke QR Code yang ada di layar logs Koyeb.
+4. **SELESAI!** Status akan berubah menjadi `✅ WHATSAPP BOT BERHASIL TERHUBUNG & SIAP DIGUNAKAN 24/7!`.
+
+Sekarang Anda bisa mematikan laptop Anda, dan bot WhatsApp Anda akan tetap aktif melayani pembuatan link Zoom 24 jam nonstop!
