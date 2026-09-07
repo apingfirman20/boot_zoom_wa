@@ -1,0 +1,32 @@
+{
+  "name": "wa-bot-zoom-ai",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot with Gemini AI and Zoom API via Baileys QR Code for Koyeb (24/7 Free Hosting)",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js",
+    "test": "node test-mock.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "gemini",
+    "zoom",
+    "baileys",
+    "koyeb"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^2.21.0",
+    "@whiskeysockets/baileys": "^6.7.24",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
