@@ -3,3 +3,5 @@ auth_info_baileys
 .git
 .env
 .vercel
+bot.log
+storage

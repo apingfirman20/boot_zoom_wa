@@ -9,9 +9,9 @@ RUN npm install --omit=dev
 # Salin seluruh kode proyek
 COPY . .
 
-# Hugging Face Spaces menggunakan port 7860 secara default
-EXPOSE 7860
-ENV PORT=7860
+# Port default (Railway akan menginjeksi PORT secara dinamis)
+EXPOSE 8000
+ENV PORT=8000
 
 # Jalankan bot WhatsApp
 CMD ["node", "bot.js"]

@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import { checkMeetingExists } from './zoom.js';
 
-const DATA_DIR = './data';
+const STORAGE_DIR = process.env.STORAGE_DIR || '.';
+const DATA_DIR = path.join(STORAGE_DIR, 'data');
 const MEETINGS_FILE = path.join(DATA_DIR, 'meetings.json');
 
 // Pastikan direktori dan file data tersedia
@@ -15,7 +17,7 @@ function ensureFile() {
 }
 
 /**
- * Mengambil semua meeting yang belum lewat (masih aktif / masa depan).
+ * Mengambil semua meeting yang belum lewat (masih aktif / masa depan atau pending rekaman).
  */
 export function getActiveMeetings() {
   ensureFile();
@@ -24,11 +26,16 @@ export function getActiveMeetings() {
     const list = JSON.parse(raw);
     const now = Date.now();
 
-    // Hapus meeting yang sudah selesai lebih dari 3 jam lalu agar file tetap bersih
+    // Simpan meeting aktif dan meeting yang rekamannya masih menunggu dikirim (hingga 12 jam)
     const active = list.filter(m => {
       const startTime = new Date(m.startTime).getTime();
       const endTime = startTime + (m.duration || 45) * 60 * 1000;
-      return endTime > (now - 3 * 3600 * 1000);
+      const isPendingRecording = m.autoRecord && !m.recordingSent;
+
+      if (isPendingRecording) {
+        return endTime > (now - 12 * 3600 * 1000);
+      }
+      return endTime > (now - 4 * 3600 * 1000);
     });
 
     // Simpan kembali jika ada yang dibersihkan
@@ -57,6 +64,10 @@ export function saveScheduledMeeting(meeting) {
       duration: Number(meeting.duration) || 45,
       joinUrl: meeting.joinUrl,
       passcode: meeting.passcode,
+      autoRecord: Boolean(meeting.autoRecord),
+      requesterPhone: meeting.requesterPhone || '',
+      recordRequesterPhone: meeting.recordRequesterPhone || meeting.requesterPhone || '',
+      recordingSent: false,
       createdAt: new Date().toISOString()
     });
     fs.writeFileSync(MEETINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
@@ -66,12 +77,152 @@ export function saveScheduledMeeting(meeting) {
 }
 
 /**
+ * Mendapatkan meeting yang sedang live / berlangsung saat ini.
+ * Digunakan saat ada perintah "rekam pak" untuk menentukan meeting mana yang direkam.
+ * 
+ * @returns {object|null}
+ */
+export function getCurrentLiveMeeting() {
+  const meetings = getActiveMeetings();
+  if (meetings.length === 0) return null;
+
+  const now = Date.now();
+
+  // 1. Cari meeting yang saat ini berada dalam rentang waktu mulai s.d. selesai (dengan buffer 10 menit sebelum & sesudah)
+  const liveMeetings = meetings.filter(m => {
+    const start = new Date(m.startTime).getTime();
+    const end = start + (m.duration || 45) * 60 * 1000;
+    return now >= (start - 10 * 60 * 1000) && now <= (end + 15 * 60 * 1000);
+  });
+
+  if (liveMeetings.length > 0) {
+    // Pilih meeting yang waktu mulainya paling dekat dengan sekarang
+    return liveMeetings.sort((a, b) => {
+      const diffA = Math.abs(new Date(a.startTime).getTime() - now);
+      const diffB = Math.abs(new Date(b.startTime).getTime() - now);
+      return diffA - diffB;
+    })[0];
+  }
+
+  // 2. Jika tidak ada yang strictly live tapi hanya ada 1 meeting aktif hari ini, gunakan itu
+  if (meetings.length === 1) {
+    return meetings[0];
+  }
+
+  return null;
+}
+
+/**
+ * Memperbarui status rekaman meeting (misal autoRecord diaktifkan, nomor penerima, atau recordingSent = true).
+ * 
+ * @param {string|number} meetingId
+ * @param {object} updateData
+ * @returns {boolean}
+ */
+export function updateMeetingRecording(meetingId, updateData = {}) {
+  ensureFile();
+  try {
+    const raw = fs.readFileSync(MEETINGS_FILE, 'utf-8');
+    const list = JSON.parse(raw);
+    const targetId = String(meetingId).trim();
+    let updated = false;
+
+    for (const m of list) {
+      if (String(m.id).trim() === targetId) {
+        Object.assign(m, updateData);
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      fs.writeFileSync(MEETINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error(`Gagal update status rekaman meeting ${meetingId}:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Mengambil daftar meeting yang meminta autoRecord dan belum dikirimkan videonya.
+ * 
+ * @returns {Array<object>}
+ */
+export function getMeetingsPendingRecording() {
+  const meetings = getActiveMeetings();
+  const now = Date.now();
+
+  return meetings.filter(m => {
+    if (!m.autoRecord || m.recordingSent) return false;
+    const start = new Date(m.startTime).getTime();
+    // Hanya periksa meeting yang waktu mulainya sudah lewat (sudah berjalan / selesai)
+    return now >= start;
+  });
+}
+
+/**
+ * Menghapus meeting dari data jadwal lokal berdasarkan ID meeting.
+ * @param {string|number} meetingId
+ * @returns {boolean} true jika berhasil dihapus
+ */
+export function removeScheduledMeeting(meetingId) {
+  ensureFile();
+  try {
+    const raw = fs.readFileSync(MEETINGS_FILE, 'utf-8');
+    const list = JSON.parse(raw);
+    const targetId = String(meetingId).trim();
+    const updated = list.filter(m => String(m.id).trim() !== targetId);
+
+    if (updated.length !== list.length) {
+      fs.writeFileSync(MEETINGS_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+      console.log(`🗑️ Meeting ID ${meetingId} berhasil dihapus dari jadwal lokal.`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('Gagal menghapus meeting dari file:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Sinkronisasi jadwal lokal dengan status sebenarnya di Zoom API.
+ * Menghapus meeting yang sudah dihapus manual oleh user di aplikasi/web Zoom.
+ */
+export async function syncMeetingsWithZoom() {
+  const meetings = getActiveMeetings();
+  if (meetings.length === 0) return [];
+
+  console.log(`🔄 Memverifikasi ${meetings.length} jadwal meeting dengan server Zoom...`);
+  const stillValid = [];
+
+  for (const m of meetings) {
+    const exists = await checkMeetingExists(m.id);
+    if (!exists) {
+      console.log(`🗑️ Meeting ID ${m.id} (${m.topic}) sudah dihapus di Zoom, membersihkan dari database lokal.`);
+      removeScheduledMeeting(m.id);
+    } else {
+      stillValid.push(m);
+    }
+  }
+
+  return stillValid;
+}
+
+/**
  * Cek apakah ada jadwal meeting yang bertabrakan (jam yang sama / overlap).
+ * Otomatis memvalidasi ke Zoom API jika ada jadwal yang bentrok:
+ * Jika meeting ternyata sudah dihapus di Zoom oleh user, jadwal lokal akan otomatis dibersihkan
+ * dan tidak lagi dianggap bentrok.
+ * 
  * @param {string|Date} startTimeISO 
  * @param {number} durationMinutes 
- * @returns {{ hasConflict: boolean, conflictingMeeting: object|null }}
+ * @returns {Promise<{ hasConflict: boolean, conflictingMeeting: object|null }>}
  */
-export function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
+export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
   const targetStart = new Date(startTimeISO).getTime();
   if (isNaN(targetStart)) return { hasConflict: false, conflictingMeeting: null };
 
@@ -87,6 +238,14 @@ export function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
     // Overlap terjadi jika waktu meeting baru beririsan dengan waktu meeting yang sudah ada
     // Misal: targetStart < existingEnd DAN targetEnd > existingStart
     if (targetStart < existingEnd && targetEnd > existingStart) {
+      // Validasi langsung ke Zoom API: Apakah meeting ini masih eksis?
+      const exists = await checkMeetingExists(m.id);
+      if (!exists) {
+        console.log(`💡 Jadwal bentrok dengan ID ${m.id} (${m.topic}) diabaikan karena meeting sudah dihapus di Zoom.`);
+        removeScheduledMeeting(m.id);
+        continue; // Lanjut cek meeting lain
+      }
+
       return {
         hasConflict: true,
         conflictingMeeting: m
@@ -99,11 +258,13 @@ export function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
 
 /**
  * Cek apakah ada meeting lain yang berjarak 1-2 jam setelah meeting baru.
+ * Otomatis memvalidasi keberadaan meeting di Zoom API.
+ * 
  * @param {string|Date} startTimeISO 
  * @param {number} durationMinutes 
- * @returns {object|null} Meeting terdekat dalam rentang 1-2 jam
+ * @returns {Promise<object|null>} Meeting terdekat dalam rentang 1-2 jam
  */
-export function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 45) {
+export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 45) {
   const targetStart = new Date(startTimeISO).getTime();
   if (isNaN(targetStart)) return null;
 
@@ -121,5 +282,15 @@ export function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 45) {
     })
     .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
-  return nearby.length > 0 ? nearby[0] : null;
+  for (const m of nearby) {
+    const exists = await checkMeetingExists(m.id);
+    if (!exists) {
+      removeScheduledMeeting(m.id);
+      continue;
+    }
+    return m;
+  }
+
+  return null;
 }
+
