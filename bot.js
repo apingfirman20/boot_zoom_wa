@@ -7,9 +7,10 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
-import { extractMeetingDetails } from './src/services/gemini.js';
+import { parseMeetingCommand } from './src/utils/parser.js';
 import { createZoomMeeting } from './src/services/zoom.js';
 import { formatMeetingTime } from './src/utils/datetime.js';
+import { checkScheduleConflict, saveScheduledMeeting, getNearbyUpcomingMeeting } from './src/services/schedule.js';
 
 const AUTH_FOLDER = './auth_info_baileys';
 
@@ -22,8 +23,16 @@ const server = http.createServer((req, res) => {
   res.end('🤖 Bot Zoom AI WhatsApp (Baileys) aktif & berjalan 24/7 di Koyeb!\n');
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`ℹ️ Port ${PORT} sedang digunakan oleh aplikasi lain, HTTP health-check dilewati (bot tetap berjalan normal).`);
+  } else {
+    console.error('HTTP server error:', err);
+  }
+});
+
 server.listen(PORT, () => {
-  console.log(`🌐 Health check server berjalan di port ${PORT} (Koyeb Ready)`);
+  console.log(`🌐 Health check server berjalan di port ${PORT}`);
 });
 
 // -----------------------------------------------------------------------------
@@ -98,74 +107,99 @@ async function startBot() {
       const senderName = msg.pushName || 'Teman';
       const isFromMe = msg.key.fromMe;
 
-      // Jika pesan dari nomor sendiri, proses hanya jika diawali perintah '!meeting' agar tidak looping
-      if (isFromMe && !messageText.toLowerCase().startsWith('!meeting')) {
+      // Cegah looping jika pesan merupakan balasan dari bot itu sendiri
+      if (
+        messageText.startsWith('Berikut Pak/Bu') ||
+        messageText.startsWith('Mohon maaf Pak/Bu') ||
+        messageText.startsWith('Untuk di jam') ||
+        messageText.startsWith('*✅ Link Zoom Meeting') ||
+        messageText.startsWith('Maaf ')
+      ) {
         continue;
       }
 
-      console.log(`\n📩 [Pesan Masuk] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+      // 1. Cek apakah pesan berisi kata kunci perintah Zoom / Meeting
+      const command = parseMeetingCommand(messageText);
+
+      // Jika TIDAK ADA kata kunci perintah meeting, abaikan sama sekali (tidak perlu dijawab)
+      if (!command) {
+        continue;
+      }
+
+      console.log(`\n📩 [Perintah Meeting Masuk] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+      console.log(`📋 [Hasil Parser Template] Topik: "${command.topic}", Waktu: ${command.startTime}`);
 
       try {
         // Beri tanda centang biru (read)
         await sock.readMessages([msg.key]);
 
-        const cleanText = messageText.replace(/^!meeting\s*/i, '').trim();
+        // 2. CEK JADWAL BENTROK (Jam yang sama / Overlap)
+        const { hasConflict, conflictingMeeting } = checkScheduleConflict(command.startTime, command.durationMinutes);
+        if (hasConflict && conflictingMeeting) {
+          const confTime = formatMeetingTime(conflictingMeeting.startTime);
+          const replyConflict = `Mohon maaf Pak/Bu, di jam segitu (${confTime}) ada tim ${conflictingMeeting.topic} yang sedang meeting. Mohon ditunggu ya atau jadwalkan di jam lain, agar meeting tidak double.`;
+          await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
+          console.log(`⚠️ Ditolak: Jadwal bentrok dengan tim ${conflictingMeeting.topic} (${confTime})`);
+          continue;
+        }
 
-        // 1. Analisis niat pesan via Google Gemini AI
-        console.log('🤖 Menganalisis pesan dengan Gemini AI...');
-        const aiResult = await extractMeetingDetails(cleanText, senderName);
-        console.log('💡 Hasil Analisis Gemini:', JSON.stringify(aiResult));
+        // 3. Buat Meeting di Zoom via REST API
+        console.log('📞 Menghubungi Zoom API...');
+        try {
+          const meeting = await createZoomMeeting({
+            topic: command.topic,
+            startTime: command.startTime,
+            duration: command.durationMinutes
+          });
 
-        // ALUR 1: Niat membuat meeting Zoom
-        if (aiResult.intent === 'CREATE_MEETING') {
-          if (aiResult.needsMoreInfo || !aiResult.startTime) {
-            // Waktu belum jelas, minta klarifikasi
-            await sock.sendMessage(remoteJid, { text: aiResult.replyMessage }, { quoted: msg });
-            continue;
+          // Simpan meeting ke database jadwal lokal agar dapat mendeteksi bentrok selanjutnya
+          saveScheduledMeeting({
+            meetingId: meeting.meetingId,
+            topic: command.topic,
+            startTime: command.startTime,
+            duration: command.durationMinutes,
+            joinUrl: meeting.joinUrl,
+            passcode: meeting.passcode
+          });
+
+          const formattedTime = formatMeetingTime(command.startTime);
+
+          // Template balasan utama sesuai permintaan
+          const replySuccess = [
+            `Berikut Pak/Bu untuk Link Zoomnya`,
+            `Topik: ${meeting.topic}`,
+            `Waktu: ${formattedTime}`,
+            `🔗 Link Zoom:`,
+            `${meeting.joinUrl}`,
+            `🆔 Meeting ID: ${meeting.meetingId}`,
+            meeting.passcode ? `🔑 Passcode: ${meeting.passcode}` : null,
+            `Link di atas sudah dapat langsung dibagikan kepada peserta meeting.`
+          ].filter(Boolean).join('\n');
+
+          await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
+          console.log(`✅ Link Zoom berhasil dikirim ke ${remoteJid}!`);
+
+          // 4. CEK APAKAH ADA MEETING BERIKUTNYA YANG BERJARAK 1-2 JAM
+          const nearbyMeeting = getNearbyUpcomingMeeting(command.startTime, command.durationMinutes);
+          if (nearbyMeeting) {
+            const nearbyDate = new Date(nearbyMeeting.startTime);
+            const nearbyHour = new Intl.DateTimeFormat('id-ID', {
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+              timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
+            }).format(nearbyDate);
+
+            const followUpText = `Untuk di jam ${nearbyHour} zoom akan dipakai oleh tim ${nearbyMeeting.topic}, mohon dikondisikan ya.`;
+            // Kirim sebagai chat lanjutan
+            await sock.sendMessage(remoteJid, { text: followUpText });
+            console.log(`📢 Keterangan lanjutan jadwal terdekat berhasil dikirim: "${followUpText}"`);
           }
 
-          // 2. Buat Meeting di Zoom via REST API
-          console.log('📞 Menghubungi Zoom API...');
-          try {
-            const meeting = await createZoomMeeting({
-              topic: aiResult.topic,
-              startTime: aiResult.startTime,
-              duration: aiResult.durationMinutes
-            });
-
-            const formattedTime = formatMeetingTime(aiResult.startTime);
-
-            const replySuccess = [
-              `*✅ Link Zoom Meeting Berhasil Dibuat!*`,
-              ``,
-              `📌 *Topik:* ${meeting.topic}`,
-              `🗓️ *Waktu:* ${formattedTime}`,
-              `⏱️ *Durasi:* ±${meeting.duration} Menit`,
-              ``,
-              `🔗 *Link Zoom:*`,
-              `${meeting.joinUrl}`,
-              ``,
-              `🆔 *Meeting ID:* ${meeting.meetingId}`,
-              meeting.passcode ? `🔑 *Passcode:* ${meeting.passcode}` : null,
-              ``,
-              `_Link di atas sudah dapat langsung dibagikan kepada peserta meeting._`
-            ].filter(Boolean).join('\n');
-
-            await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
-            console.log(`✅ Link Zoom berhasil dikirim ke ${remoteJid}!`);
-
-          } catch (zoomErr) {
-            console.error('❌ Gagal membuat Zoom meeting:', zoomErr.message);
-            const errReply = `Maaf ${senderName}, terjadi kendala saat membuat meeting di Zoom: ${zoomErr.message}`;
-            await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
-          }
-
-        } else {
-          // ALUR 2: Obrolan umum / bukan meeting
-          // Balas hanya jika chat pribadi (bukan grup) agar tidak spam di grup
-          if (!remoteJid.endsWith('@g.us')) {
-            await sock.sendMessage(remoteJid, { text: aiResult.replyMessage }, { quoted: msg });
-          }
+        } catch (zoomErr) {
+          console.error('❌ Gagal membuat Zoom meeting:', zoomErr.message);
+          const errReply = `Maaf ${senderName}, terjadi kendala saat membuat meeting di Zoom: ${zoomErr.message}`;
+          await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
         }
 
       } catch (err) {
