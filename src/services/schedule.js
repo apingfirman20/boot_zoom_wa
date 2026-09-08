@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { checkMeetingExists } from './zoom.js';
+import { parseToDate } from '../utils/datetime.js';
 
 const STORAGE_DIR = process.env.STORAGE_DIR || '.';
 const DATA_DIR = path.join(STORAGE_DIR, 'data');
@@ -28,7 +29,7 @@ export function getActiveMeetings() {
 
     // Simpan meeting aktif dan meeting yang rekamannya masih menunggu dikirim (hingga 12 jam)
     const active = list.filter(m => {
-      const startTime = new Date(m.startTime).getTime();
+      const startTime = parseToDate(m.startTime).getTime();
       const endTime = startTime + (m.duration || 45) * 60 * 1000;
       const isPendingRecording = m.autoRecord && !m.recordingSent;
 
@@ -90,7 +91,7 @@ export function getCurrentLiveMeeting() {
 
   // 1. Cari meeting yang saat ini berada dalam rentang waktu mulai s.d. selesai (dengan buffer 10 menit sebelum & sesudah)
   const liveMeetings = meetings.filter(m => {
-    const start = new Date(m.startTime).getTime();
+    const start = parseToDate(m.startTime).getTime();
     const end = start + (m.duration || 45) * 60 * 1000;
     return now >= (start - 10 * 60 * 1000) && now <= (end + 15 * 60 * 1000);
   });
@@ -98,8 +99,8 @@ export function getCurrentLiveMeeting() {
   if (liveMeetings.length > 0) {
     // Pilih meeting yang waktu mulainya paling dekat dengan sekarang
     return liveMeetings.sort((a, b) => {
-      const diffA = Math.abs(new Date(a.startTime).getTime() - now);
-      const diffB = Math.abs(new Date(b.startTime).getTime() - now);
+      const diffA = Math.abs(parseToDate(a.startTime).getTime() - now);
+      const diffB = Math.abs(parseToDate(b.startTime).getTime() - now);
       return diffA - diffB;
     })[0];
   }
@@ -223,14 +224,14 @@ export async function syncMeetingsWithZoom() {
  * @returns {Promise<{ hasConflict: boolean, conflictingMeeting: object|null }>}
  */
 export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
-  const targetStart = new Date(startTimeISO).getTime();
+  const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return { hasConflict: false, conflictingMeeting: null };
 
   const targetEnd = targetStart + durationMinutes * 60 * 1000;
   const meetings = getActiveMeetings();
 
   for (const m of meetings) {
-    const existingStart = new Date(m.startTime).getTime();
+    const existingStart = parseToDate(m.startTime).getTime();
     if (isNaN(existingStart)) continue;
 
     const existingEnd = existingStart + (m.duration || 45) * 60 * 1000;
@@ -265,7 +266,7 @@ export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) 
  * @returns {Promise<object|null>} Meeting terdekat dalam rentang 1-2 jam
  */
 export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 45) {
-  const targetStart = new Date(startTimeISO).getTime();
+  const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return null;
 
   const targetEnd = targetStart + durationMinutes * 60 * 1000;
@@ -274,13 +275,13 @@ export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 4
   // Cari meeting yang mulai setelah meeting ini, dalam rentang hingga 2.5 jam ke depan
   const nearby = meetings
     .filter(m => {
-      const existingStart = new Date(m.startTime).getTime();
+      const existingStart = parseToDate(m.startTime).getTime();
       const diffMs = existingStart - targetStart;
       const diffMinutes = diffMs / (60 * 1000);
       // Berjarak antara 30 menit s.d. 150 menit (sekitar 1-2 jam)
       return diffMinutes >= (durationMinutes - 10) && diffMinutes <= 150;
     })
-    .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    .sort((a, b) => parseToDate(a.startTime).getTime() - parseToDate(b.startTime).getTime());
 
   for (const m of nearby) {
     const exists = await checkMeetingExists(m.id);
@@ -293,4 +294,5 @@ export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 4
 
   return null;
 }
+
 
