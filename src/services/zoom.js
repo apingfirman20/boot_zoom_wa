@@ -289,4 +289,179 @@ export async function getMeetingRecordings(meetingId) {
   }
 }
 
+/**
+ * Mengambil detail meeting yang telah selesai (start_time, end_time, duration aktual, participants_count).
+ * 
+ * @param {string|number} meetingId
+ * @returns {Promise<{
+ *   id: string,
+ *   topic: string,
+ *   startTime: string,
+ *   endTime: string,
+ *   duration: number,
+ *   totalMinutes: number,
+ *   participantsCount: number
+ * }|null>}
+ */
+export async function getPastMeetingDetails(meetingId) {
+  if (!meetingId) return null;
+  try {
+    const accessToken = await getZoomAccessToken();
+    const encodedId = encodeURIComponent(String(meetingId).trim());
+    const response = await fetch(`https://api.zoom.us/v2/past_meetings/${encodedId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        cachedAccessToken = null;
+        tokenExpiresAt = 0;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    return {
+      id: String(data.id || meetingId),
+      topic: data.topic || '',
+      startTime: data.start_time || '',
+      endTime: data.end_time || '',
+      duration: data.duration || 0,
+      totalMinutes: data.total_minutes || data.duration || 0,
+      participantsCount: data.participants_count || 0
+    };
+  } catch (err) {
+    console.error(`Gagal mengambil detail past meeting ${meetingId}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Format durasi detik peserta menjadi teks ramah baca.
+ */
+function formatSecondsHuman(seconds) {
+  if (!seconds || seconds <= 0) return '< 1 menit';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 1) return '< 1 menit';
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hrs > 0 && mins > 0) {
+    return `${hrs} jam ${mins} menit`;
+  } else if (hrs > 0) {
+    return `${hrs} jam`;
+  }
+  return `${mins} menit`;
+}
+
+/**
+ * Mengambil daftar peserta yang hadir pada meeting yang telah selesai.
+ * Otomatis menangani pagination dan deduplikasi peserta jika ada yang sempat reconnect.
+ * 
+ * @param {string|number} meetingId
+ * @returns {Promise<Array<{
+ *   name: string,
+ *   userEmail: string,
+ *   durationSeconds: number,
+ *   durationText: string,
+ *   joinTime: string
+ * }>>}
+ */
+export async function getPastMeetingParticipants(meetingId) {
+  if (!meetingId) return [];
+  try {
+    const accessToken = await getZoomAccessToken();
+    const encodedId = encodeURIComponent(String(meetingId).trim());
+    
+    let rawParticipants = [];
+    let nextPageToken = '';
+
+    // Coba ambil dari /past_meetings/{meetingId}/participants
+    do {
+      const url = `https://api.zoom.us/v2/past_meetings/${encodedId}/participants?page_size=300${nextPageToken ? `&next_page_token=${encodeURIComponent(nextPageToken)}` : ''}`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          cachedAccessToken = null;
+          tokenExpiresAt = 0;
+        }
+        // Jika 404/400/403, coba fallback ke /report/meetings/{meetingId}/participants
+        if (rawParticipants.length === 0) {
+          const reportRes = await fetch(`https://api.zoom.us/v2/report/meetings/${encodedId}/participants?page_size=300`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          });
+          if (reportRes.ok) {
+            const reportData = await reportRes.json();
+            rawParticipants = reportData.participants || [];
+            break;
+          }
+        }
+        break;
+      }
+
+      const data = await response.json();
+      if (Array.isArray(data.participants)) {
+        rawParticipants.push(...data.participants);
+      }
+      nextPageToken = data.next_page_token || '';
+    } while (nextPageToken);
+
+    if (rawParticipants.length === 0) return [];
+
+    // Deduplikasi peserta berdasarkan nama (jika sempat keluar masuk / reconnect)
+    const participantMap = new Map();
+
+    for (const p of rawParticipants) {
+      const rawName = (p.name || p.user_name || 'Peserta').trim();
+      if (!rawName) continue;
+      const key = rawName.toLowerCase();
+      const durSec = Number(p.duration) || 0;
+
+      if (participantMap.has(key)) {
+        const item = participantMap.get(key);
+        item.durationSeconds += durSec;
+        if (p.join_time && (!item.joinTime || new Date(p.join_time) < new Date(item.joinTime))) {
+          item.joinTime = p.join_time;
+        }
+      } else {
+        participantMap.set(key, {
+          name: rawName,
+          userEmail: p.user_email || '',
+          durationSeconds: durSec,
+          joinTime: p.join_time || null
+        });
+      }
+    }
+
+    const result = Array.from(participantMap.values()).map(p => {
+      return {
+        ...p,
+        durationText: formatSecondsHuman(p.durationSeconds)
+      };
+    });
+
+    // Urutkan berdasarkan waktu pertama kali join (atau abjad)
+    result.sort((a, b) => {
+      if (a.joinTime && b.joinTime) {
+        return new Date(a.joinTime) - new Date(b.joinTime);
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    return result;
+  } catch (err) {
+    console.error(`Gagal mengambil data peserta meeting ${meetingId}:`, err.message);
+    return [];
+  }
+}
+
+
 

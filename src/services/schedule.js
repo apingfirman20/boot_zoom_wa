@@ -27,13 +27,14 @@ export function getActiveMeetings() {
     const list = JSON.parse(raw);
     const now = Date.now();
 
-    // Simpan meeting aktif dan meeting yang rekamannya masih menunggu dikirim (hingga 12 jam)
+    // Simpan meeting aktif, meeting pending rekaman, dan meeting pending rekap peserta (hingga 12 jam)
     const active = list.filter(m => {
       const startTime = parseToDate(m.startTime).getTime();
       const endTime = startTime + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
       const isPendingRecording = m.autoRecord && !m.recordingSent;
+      const isPendingSummary = !m.summarySent;
 
-      if (isPendingRecording) {
+      if (isPendingRecording || isPendingSummary) {
         return endTime > (now - 12 * 3600 * 1000);
       }
       return endTime > (now - 4 * 3600 * 1000);
@@ -69,6 +70,7 @@ export function saveScheduledMeeting(meeting) {
       requesterPhone: meeting.requesterPhone || '',
       recordRequesterPhone: meeting.recordRequesterPhone || meeting.requesterPhone || '',
       recordingSent: false,
+      summarySent: false,
       createdAt: new Date().toISOString()
     });
     fs.writeFileSync(MEETINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
@@ -162,6 +164,36 @@ export function getMeetingsPendingRecording() {
     // Hanya periksa meeting yang waktu mulainya sudah lewat (sudah berjalan / selesai)
     return now >= start;
   });
+}
+
+/**
+ * Mengambil daftar meeting yang belum dikirimkan rekap pesertanya.
+ * Memeriksa meeting yang sudah dimulai minimal 5 menit yang lalu.
+ * 
+ * @returns {Array<object>}
+ */
+export function getMeetingsPendingSummary() {
+  const meetings = getActiveMeetings();
+  const now = Date.now();
+
+  return meetings.filter(m => {
+    if (m.summarySent) return false;
+    const start = parseToDate(m.startTime).getTime();
+    return now >= (start + 5 * 60 * 1000);
+  });
+}
+
+/**
+ * Mencari data meeting berdasarkan meeting ID.
+ * 
+ * @param {string|number} meetingId
+ * @returns {object|null}
+ */
+export function getScheduledMeetingById(meetingId) {
+  if (!meetingId) return null;
+  const targetId = String(meetingId).trim();
+  const meetings = getActiveMeetings();
+  return meetings.find(m => String(m.id).trim() === targetId) || null;
 }
 
 /**

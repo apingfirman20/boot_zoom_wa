@@ -18,9 +18,15 @@ import {
   createZoomMeeting,
   deleteZoomMeeting,
   startLiveMeetingRecording,
-  getMeetingRecordings
+  getMeetingRecordings,
+  getPastMeetingDetails,
+  getPastMeetingParticipants
 } from './src/services/zoom.js';
-import { formatMeetingTime } from './src/utils/datetime.js';
+import {
+  formatMeetingTime,
+  formatMeetingRange,
+  formatDurationHuman
+} from './src/utils/datetime.js';
 import {
   checkScheduleConflict,
   saveScheduledMeeting,
@@ -30,7 +36,9 @@ import {
   syncMeetingsWithZoom,
   getCurrentLiveMeeting,
   updateMeetingRecording,
-  getMeetingsPendingRecording
+  getMeetingsPendingRecording,
+  getMeetingsPendingSummary,
+  getScheduledMeetingById
 } from './src/services/schedule.js';
 
 import fs from 'fs';
@@ -129,6 +137,117 @@ async function pollPendingRecordings() {
 setInterval(() => {
   pollPendingRecordings().catch(() => {});
 }, 2 * 60 * 1000);
+
+/**
+ * Mengirim laporan rekap meeting (peserta yang bergabung dan total durasi aktual) ke pemesan.
+ */
+async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
+  if (!globalSock) return;
+  const meeting = getScheduledMeetingById(meetingId);
+  if (!meeting) return;
+
+  if (meeting.summarySent) {
+    return; // Sudah pernah dikirim
+  }
+
+  const targetPhone = meeting.requesterPhone || meeting.recordRequesterPhone;
+  if (!targetPhone) {
+    console.warn(`⚠️ Tidak ada nomor tujuan untuk mengirim rekap meeting ${meeting.id}`);
+    return;
+  }
+
+  console.log(`📊 Mengumpulkan data rekap peserta untuk meeting ${meeting.id} (${meeting.topic})...`);
+
+  // Beri kesempatan retry jika Zoom butuh beberapa detik untuk memproses data peserta
+  let participants = [];
+  let pastDetails = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      pastDetails = await getPastMeetingDetails(meeting.id);
+      participants = await getPastMeetingParticipants(meeting.id);
+
+      if (participants.length > 0) {
+        break;
+      }
+    } catch (fetchErr) {
+      console.error(`Percobaan ${attempt} mengambil data peserta meeting ${meeting.id} gagal:`, fetchErr.message);
+    }
+
+    if (attempt < 3) {
+      await new Promise(r => setTimeout(r, 6000));
+    }
+  }
+
+  const topic = pastDetails?.topic || webhookObject?.topic || meeting.topic || 'Zoom Meeting';
+  const startTime = pastDetails?.startTime || webhookObject?.start_time || meeting.startTime;
+  const endTime = pastDetails?.endTime || webhookObject?.end_time || null;
+  const durationMinutes = pastDetails?.totalMinutes || pastDetails?.duration || webhookObject?.duration || meeting.duration || 60;
+
+  const timeRange = formatMeetingRange(startTime, endTime);
+  const durationText = formatDurationHuman(durationMinutes);
+
+  let participantLines = [];
+  if (participants.length > 0) {
+    participantLines = participants.map((p, idx) => {
+      const dur = p.durationText ? ` (${p.durationText})` : '';
+      return `${idx + 1}. ${p.name}${dur}`;
+    });
+  } else {
+    participantLines.push(`_Tidak ada peserta terdeteksi bergabung di ruang meeting._`);
+  }
+
+  const summaryMsg = [
+    `📊 *LAPORAN KEHADIRAN ZOOM MEETING*`,
+    ``,
+    `📌 *Topik:* ${topic}`,
+    `⏱️ *Waktu:* ${timeRange}`,
+    `⏳ *Total Durasi:* ${durationText}`,
+    `👥 *Total Peserta Hadir:* ${participants.length} Orang`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━`,
+    `*DAFTAR PESERTA YANG BERGABUNG:*`,
+    ...participantLines,
+    `━━━━━━━━━━━━━━━━━━━`,
+    `_Laporan otomatis dibuat setelah meeting berakhir._`
+  ].join('\n');
+
+  try {
+    await globalSock.sendMessage(targetPhone, { text: summaryMsg });
+    console.log(`✅ Laporan rekap peserta meeting ID ${meeting.id} (${participants.length} peserta) berhasil dikirim ke ${targetPhone}!`);
+    updateMeetingRecording(meeting.id, { summarySent: true });
+  } catch (sendErr) {
+    console.error(`Gagal mengirim laporan rekap ke ${targetPhone}:`, sendErr.message);
+  }
+}
+
+/**
+ * Pengecekan berkala (polling) untuk meeting yang sudah selesai dan belum dikirimkan rekap pesertanya.
+ */
+async function pollPendingSummaries() {
+  if (!globalSock) return;
+  const pending = getMeetingsPendingSummary();
+  if (pending.length === 0) return;
+
+  for (const m of pending) {
+    try {
+      const pastDetails = await getPastMeetingDetails(m.id);
+      // Jika data past meeting sudah memiliki end_time atau durasi, berarti meeting sudah selesai
+      if (pastDetails && (pastDetails.endTime || pastDetails.duration > 0)) {
+        console.log(`🏁 Mendeteksi meeting ${m.id} (${m.topic}) telah selesai di Zoom, memproses rekap...`);
+        await sendMeetingEndedSummary(m.id, pastDetails);
+      }
+    } catch (err) {
+      // Ignored
+    }
+  }
+}
+
+// Cek status rekap meeting yang selesai setiap 2 menit
+setInterval(() => {
+  pollPendingSummaries().catch(() => {});
+}, 2 * 60 * 1000);
+
 
 function getDashboardHtml() {
   const activeCount = getActiveMeetings().length;
@@ -312,6 +431,20 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
+        // Event meeting selesai dari Zoom (Kirim laporan rekap kehadiran & durasi)
+        if (data.event === 'meeting.ended') {
+          const obj = data.payload?.object;
+          if (obj && obj.id) {
+            console.log(`🏁 [Zoom Webhook] Meeting selesai untuk meeting ID: ${obj.id}`);
+            // Beri jeda 8 detik agar data log peserta selesai diproses oleh Zoom
+            setTimeout(() => {
+              sendMeetingEndedSummary(obj.id, obj).catch(err => {
+                console.error(`Gagal memproses rekap webhook meeting ${obj.id}:`, err.message);
+              });
+            }, 8000);
+          }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'success' }));
       } catch (e) {
@@ -431,6 +564,7 @@ async function startBot() {
       // Cek rekaman yang sudah selesai & siap dikirimkan
       setTimeout(() => {
         pollPendingRecordings().catch(err => console.error('Gagal poll rekaman awal:', err.message));
+        pollPendingSummaries().catch(err => console.error('Gagal poll rekap meeting awal:', err.message));
       }, 3000);
     }
   });

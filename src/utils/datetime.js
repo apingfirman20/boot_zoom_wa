@@ -137,3 +137,71 @@ export function formatMeetingTime(dateInput, timezone = process.env.DEFAULT_TIME
   }
 }
 
+/**
+ * Memformat durasi dalam menit menjadi teks yang mudah dibaca.
+ * Contoh: 120 -> "2 Jam (120 Menit)", 90 -> "1 Jam 30 Menit (90 Menit)", 45 -> "45 Menit"
+ * @param {number} minutes
+ * @returns {string}
+ */
+export function formatDurationHuman(minutes) {
+  const m = Math.round(Number(minutes) || 0);
+  if (m <= 0) return '0 Menit';
+  const hrs = Math.floor(m / 60);
+  const mins = m % 60;
+  if (hrs > 0 && mins > 0) {
+    return `${hrs} Jam ${mins} Menit (${m} Menit)`;
+  } else if (hrs > 0) {
+    return `${hrs} Jam (${m} Menit)`;
+  } else {
+    return `${mins} Menit`;
+  }
+}
+
+/**
+ * Memformat rentang waktu meeting.
+ * Contoh: "Rabu, 9 September 2026 pukul 10.00 - 12.00 WIB"
+ * @param {string|Date} startDateInput
+ * @param {string|Date} endDateInput
+ * @param {string} timezone
+ * @returns {string}
+ */
+export function formatMeetingRange(startDateInput, endDateInput, timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta') {
+  try {
+    const startDate = parseToDate(startDateInput, timezone);
+    const startFormatter = new Intl.DateTimeFormat('id-ID', {
+      timeZone: timezone,
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+
+    const tzLabel = timezone === 'Asia/Jakarta' ? 'WIB'
+      : timezone === 'Asia/Makassar' ? 'WITA'
+      : timezone === 'Asia/Jayapura' ? 'WIT'
+      : timezone;
+
+    if (!endDateInput) {
+      return `${startFormatter.format(startDate)} ${tzLabel}`;
+    }
+
+    const endDate = parseToDate(endDateInput, timezone);
+    const endHourFormatter = new Intl.DateTimeFormat('id-ID', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+
+    const startFormatted = startFormatter.format(startDate);
+    const endHourFormatted = endHourFormatter.format(endDate);
+
+    return `${startFormatted} - ${endHourFormatted} ${tzLabel}`;
+  } catch {
+    return `${String(startDateInput)} - ${String(endDateInput)}`;
+  }
+}
+
