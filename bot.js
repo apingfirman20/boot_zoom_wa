@@ -25,7 +25,8 @@ import {
 import {
   formatMeetingTime,
   formatMeetingRange,
-  formatDurationHuman
+  formatDurationHuman,
+  parseToDate
 } from './src/utils/datetime.js';
 import {
   checkScheduleConflict,
@@ -180,9 +181,23 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
   }
 
   const topic = pastDetails?.topic || webhookObject?.topic || meeting.topic || 'Zoom Meeting';
-  const startTime = pastDetails?.startTime || webhookObject?.start_time || meeting.startTime;
-  const endTime = pastDetails?.endTime || webhookObject?.end_time || null;
-  const durationMinutes = pastDetails?.totalMinutes || pastDetails?.duration || webhookObject?.duration || meeting.duration || 60;
+  const startTime = pastDetails?.startTime || webhookObject?.start_time || webhookObject?.startTime || meeting.startTime;
+  const endTime = pastDetails?.endTime || webhookObject?.end_time || webhookObject?.endTime || null;
+
+  // Hitung durasi aktual meeting dari jam meeting dimulai hingga selesai
+  let durationMinutes = 0;
+  if (startTime && endTime) {
+    const startMs = parseToDate(startTime).getTime();
+    const endMs = parseToDate(endTime).getTime();
+    if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+      durationMinutes = Math.round((endMs - startMs) / 60000);
+    }
+  }
+
+  // Jika durasi dari rentang jam tidak dapat dihitung, gunakan durasi meeting Zoom (bukan total_minutes akumulatif seluruh peserta)
+  if (!durationMinutes || durationMinutes <= 0) {
+    durationMinutes = pastDetails?.duration || webhookObject?.duration || meeting.duration || 0;
+  }
 
   const timeRange = formatMeetingRange(startTime, endTime);
   const durationText = formatDurationHuman(durationMinutes);

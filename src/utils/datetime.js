@@ -145,7 +145,7 @@ export function formatMeetingTime(dateInput, timezone = process.env.DEFAULT_TIME
  */
 export function formatDurationHuman(minutes) {
   const m = Math.round(Number(minutes) || 0);
-  if (m <= 0) return '0 Menit';
+  if (m <= 0) return '< 1 Menit';
   const hrs = Math.floor(m / 60);
   const mins = m % 60;
   if (hrs > 0 && mins > 0) {

@@ -2,6 +2,8 @@
  * Service integrasi Zoom API menggunakan Server-to-Server OAuth.
  */
 
+import { parseToDate } from '../utils/datetime.js';
+
 let cachedAccessToken = null;
 let tokenExpiresAt = 0;
 
@@ -299,7 +301,6 @@ export async function getMeetingRecordings(meetingId) {
  *   startTime: string,
  *   endTime: string,
  *   duration: number,
- *   totalMinutes: number,
  *   participantsCount: number
  * }|null>}
  */
@@ -324,13 +325,23 @@ export async function getPastMeetingDetails(meetingId) {
     }
 
     const data = await response.json();
+
+    // Hitung durasi aktual meeting dari waktu selesai dikurang waktu mulai
+    let actualDuration = Number(data.duration) || 0;
+    if (data.start_time && data.end_time) {
+      const startMs = parseToDate(data.start_time).getTime();
+      const endMs = parseToDate(data.end_time).getTime();
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+        actualDuration = Math.round((endMs - startMs) / 60000);
+      }
+    }
+
     return {
       id: String(data.id || meetingId),
       topic: data.topic || '',
       startTime: data.start_time || '',
       endTime: data.end_time || '',
-      duration: data.duration || 0,
-      totalMinutes: data.total_minutes || data.duration || 0,
+      duration: actualDuration,
       participantsCount: data.participants_count || 0
     };
   } catch (err) {
