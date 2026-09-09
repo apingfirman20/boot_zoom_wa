@@ -55,7 +55,7 @@ export async function getZoomAccessToken() {
  * @param {Object} options
  * @param {string} options.topic - Judul meeting
  * @param {string} [options.startTime] - Waktu mulai ISO (contoh: 2026-09-08T14:00:00)
- * @param {number} [options.duration=45] - Durasi meeting (menit)
+ * @param {number} [options.duration=60] - Durasi meeting (menit)
  * @param {string} [options.timezone] - Timezone (default: Asia/Jakarta)
  * @returns {Promise<{
  *   joinUrl: string,
@@ -69,7 +69,7 @@ export async function getZoomAccessToken() {
 export async function createZoomMeeting({
   topic = 'WhatsApp AI Scheduled Meeting',
   startTime = null,
-  duration = 45,
+  duration = Number(process.env.DEFAULT_MEETING_DURATION) || 60,
   timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta',
   autoRecord = false
 }) {
@@ -78,14 +78,15 @@ export async function createZoomMeeting({
   const bodyPayload = {
     topic,
     type: 2, // Scheduled meeting
-    duration: Number(duration) || 45,
+    duration: Number(duration) || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
     timezone,
     settings: {
       host_video: true,
       participant_video: true,
-      join_before_host: false,
+      join_before_host: true,
+      jbh_time: 0, // 0 = Anytime (peserta bisa langsung join sebelum host)
       mute_upon_entry: true,
-      waiting_room: true,
+      waiting_room: false, // Matikan waiting room agar peserta tidak perlu di-acc host
       auto_recording: autoRecord ? 'cloud' : 'none'
     }
   };

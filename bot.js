@@ -404,7 +404,13 @@ async function startBot() {
         console.log('🔄 Menghubungkan kembali dalam 3 detik...');
         setTimeout(() => startBot(), 3000);
       } else {
-        console.log('❌ Sesi telah logout dari WhatsApp. Silakan jalankan ulang bot untuk scan QR baru.');
+        console.log('❌ Sesi telah logout dari WhatsApp. Membersihkan sesi lama dan menyiapkan QR baru...');
+        try {
+          fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+        } catch (rmErr) {
+          console.error('Gagal membersihkan auth folder:', rmErr.message);
+        }
+        setTimeout(() => startBot(), 2000);
       }
     } else if (connection === 'open') {
       latestQr = null;

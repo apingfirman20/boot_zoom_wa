@@ -48,7 +48,7 @@ Panduan Ekstraksi:
    - Jika pengguna meminta meeting tapi TIDAK menyebutkan jam/hari sama sekali:
      - Set "needsMoreInfo" = true.
      - Tuliskan "replyMessage" yang ramah dan sopan menanyakan kapan waktu yang diinginkan.
-   - Ekstrak "durationMinutes": Durasi meeting dalam menit (default: 45 jika tidak disebutkan).
+   - Ekstrak "durationMinutes": Durasi meeting dalam menit (default: 60 menit / 1 jam jika tidak disebutkan).
 
 2. Jika pengguna HANYA menyapa, bertanya hal umum, atau tidak ada niat membuat meeting:
    - Set "intent" = "OTHER".
@@ -81,7 +81,7 @@ Panduan Ekstraksi:
             },
             durationMinutes: {
               type: Type.INTEGER,
-              description: 'Perkiraan durasi meeting dalam menit'
+              description: 'Perkiraan durasi meeting dalam menit (default 60 jika tidak disebutkan)'
             },
             needsMoreInfo: {
               type: Type.BOOLEAN,
@@ -104,7 +104,7 @@ Panduan Ekstraksi:
       intent: parsed.intent || 'OTHER',
       topic: parsed.topic || 'Zoom Meeting',
       startTime: parsed.startTime || null,
-      durationMinutes: parsed.durationMinutes || 45,
+      durationMinutes: parsed.durationMinutes || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
       needsMoreInfo: Boolean(parsed.needsMoreInfo),
       replyMessage: parsed.replyMessage || 'Halo! Saya bot pembuat link Zoom otomatis.'
     };

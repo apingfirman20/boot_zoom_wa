@@ -177,8 +177,8 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
     }
   }
 
-  // 7. Ekstraksi Durasi (opsional, default 45 menit)
-  let durationMinutes = 45;
+  // 7. Ekstraksi Durasi (opsional, default 60 menit / 1 jam)
+  let durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60;
   const durMatch = text.match(/(\d+)\s*(menit|jam)/i);
   if (durMatch) {
     const val = parseInt(durMatch[1], 10);

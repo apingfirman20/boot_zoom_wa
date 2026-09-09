@@ -30,7 +30,7 @@ export function getActiveMeetings() {
     // Simpan meeting aktif dan meeting yang rekamannya masih menunggu dikirim (hingga 12 jam)
     const active = list.filter(m => {
       const startTime = parseToDate(m.startTime).getTime();
-      const endTime = startTime + (m.duration || 45) * 60 * 1000;
+      const endTime = startTime + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
       const isPendingRecording = m.autoRecord && !m.recordingSent;
 
       if (isPendingRecording) {
@@ -62,7 +62,7 @@ export function saveScheduledMeeting(meeting) {
       id: meeting.meetingId || meeting.id,
       topic: meeting.topic,
       startTime: meeting.startTime,
-      duration: Number(meeting.duration) || 45,
+      duration: Number(meeting.duration) || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
       joinUrl: meeting.joinUrl,
       passcode: meeting.passcode,
       autoRecord: Boolean(meeting.autoRecord),
@@ -92,7 +92,7 @@ export function getCurrentLiveMeeting() {
   // 1. Cari meeting yang saat ini berada dalam rentang waktu mulai s.d. selesai (dengan buffer 10 menit sebelum & sesudah)
   const liveMeetings = meetings.filter(m => {
     const start = parseToDate(m.startTime).getTime();
-    const end = start + (m.duration || 45) * 60 * 1000;
+    const end = start + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
     return now >= (start - 10 * 60 * 1000) && now <= (end + 15 * 60 * 1000);
   });
 
@@ -223,7 +223,7 @@ export async function syncMeetingsWithZoom() {
  * @param {number} durationMinutes 
  * @returns {Promise<{ hasConflict: boolean, conflictingMeeting: object|null }>}
  */
-export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) {
+export async function checkScheduleConflict(startTimeISO, durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60) {
   const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return { hasConflict: false, conflictingMeeting: null };
 
@@ -234,7 +234,7 @@ export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) 
     const existingStart = parseToDate(m.startTime).getTime();
     if (isNaN(existingStart)) continue;
 
-    const existingEnd = existingStart + (m.duration || 45) * 60 * 1000;
+    const existingEnd = existingStart + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
 
     // Overlap terjadi jika waktu meeting baru beririsan dengan waktu meeting yang sudah ada
     // Misal: targetStart < existingEnd DAN targetEnd > existingStart
@@ -265,7 +265,7 @@ export async function checkScheduleConflict(startTimeISO, durationMinutes = 45) 
  * @param {number} durationMinutes 
  * @returns {Promise<object|null>} Meeting terdekat dalam rentang 1-2 jam
  */
-export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = 45) {
+export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60) {
   const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return null;
 
