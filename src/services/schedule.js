@@ -222,6 +222,41 @@ export function removeScheduledMeeting(meetingId) {
 }
 
 /**
+ * Memperbarui data meeting yang tersimpan di jadwal lokal.
+ * 
+ * @param {string|number} meetingId
+ * @param {object} updateData
+ * @returns {object|null} Meeting data yang telah diupdate
+ */
+export function updateScheduledMeeting(meetingId, updateData = {}) {
+  ensureFile();
+  try {
+    const raw = fs.readFileSync(MEETINGS_FILE, 'utf-8');
+    const list = JSON.parse(raw);
+    const targetId = String(meetingId).trim();
+    let updatedMeeting = null;
+
+    for (const m of list) {
+      if (String(m.id).trim() === targetId) {
+        Object.assign(m, updateData);
+        updatedMeeting = m;
+        break;
+      }
+    }
+
+    if (updatedMeeting) {
+      fs.writeFileSync(MEETINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+      console.log(`📝 Meeting ID ${meetingId} berhasil diperbarui di jadwal lokal.`);
+      return updatedMeeting;
+    }
+    return null;
+  } catch (err) {
+    console.error(`Gagal memperbarui meeting ${meetingId} di database lokal:`, err.message);
+    return null;
+  }
+}
+
+/**
  * Sinkronisasi jadwal lokal dengan status sebenarnya di Zoom API.
  * Menghapus meeting yang sudah dihapus manual oleh user di aplikasi/web Zoom.
  */
@@ -253,9 +288,10 @@ export async function syncMeetingsWithZoom() {
  * 
  * @param {string|Date} startTimeISO 
  * @param {number} durationMinutes 
+ * @param {string|number|null} [excludeMeetingId=null] ID meeting yang dikecualikan (misal saat edit)
  * @returns {Promise<{ hasConflict: boolean, conflictingMeeting: object|null }>}
  */
-export async function checkScheduleConflict(startTimeISO, durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60) {
+export async function checkScheduleConflict(startTimeISO, durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60, excludeMeetingId = null) {
   const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return { hasConflict: false, conflictingMeeting: null };
 
@@ -263,6 +299,11 @@ export async function checkScheduleConflict(startTimeISO, durationMinutes = Numb
   const meetings = getActiveMeetings();
 
   for (const m of meetings) {
+    // Lewati jika ini adalah meeting yang sedang di-edit (tidak membenturkan dengan dirinya sendiri)
+    if (excludeMeetingId && String(m.id).trim() === String(excludeMeetingId).trim()) {
+      continue;
+    }
+
     const existingStart = parseToDate(m.startTime).getTime();
     if (isNaN(existingStart)) continue;
 

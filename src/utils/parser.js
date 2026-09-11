@@ -12,10 +12,12 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  // 1. Abaikan jika ini adalah perintah pembatalan / hapus atau cek jadwal
+  // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, atau info/panduan
   const isCancel = /(?:hapus|batal(?:kan)?|cancel|delete)/i.test(lower);
   const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+zoom|daftar\s+zoom|list\s+zoom|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
-  if (isCancel || isList) {
+  const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
+  const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
+  if (isCancel || isList || isEdit || isHelp) {
     return null;
   }
 
@@ -327,4 +329,231 @@ export function parseListCommand(messageText) {
     isListCommand: true
   };
 }
+
+/**
+ * Parsing perintah ubah / edit / reschedule jadwal meeting Zoom.
+ * Contoh:
+ * - "ubah zoom jam 2 siang jadi jam 4 sore"
+ * - "ganti jadwal zoom tim marketing ke besok jam 10 pagi"
+ * - "reschedule zoom 89234567890 ke jam 3 sore"
+ * - "edit topik zoom jam 2 siang jadi Review Project Alpha"
+ * 
+ * @param {string} messageText 
+ * @param {string} defaultTz 
+ * @returns {object|null}
+ */
+export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta') {
+  if (!messageText || typeof messageText !== 'string') return null;
+
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  const isEditTrigger = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) ||
+                        /^[!/](?:edit|ubah|reschedule)/i.test(lower);
+
+  if (!isEditTrigger) return null;
+
+  // 1. Ekstrak Meeting ID (9-11 digit) jika ada
+  const idMatch = text.match(/\b\d{9,11}\b/);
+  const meetingId = idMatch ? idMatch[0] : null;
+
+  // 2. Pemisahan bagian LAMA (target yang mau diubah) dan bagian BARU (perubahan)
+  // Dipisahkan oleh kata: "jadi", "menjadi", "ke", "pindah ke", "to"
+  let oldPart = '';
+  let newPart = '';
+
+  const splitMatch = text.match(/(.*?)\s+(?:jadi|menjadi|ke|pindah\s+ke|to)\s+(.*)/i);
+  if (splitMatch) {
+    oldPart = splitMatch[1];
+    newPart = splitMatch[2].trim();
+  } else {
+    oldPart = text;
+    newPart = text;
+  }
+
+  // 3. Ekstrak waktu/target lama dari oldPart
+  let targetOldHour = null;
+  let targetTopic = null;
+
+  if (oldPart) {
+    const oldPartLower = oldPart.toLowerCase();
+    const oldTimeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})?(?:\s*(pagi|siang|sore|malam))?/i;
+    const oldHourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(pagi|siang|sore|malam))?/i;
+
+    const matchOldFull = oldPartLower.match(oldTimeRegex);
+    const matchOldSimple = oldPartLower.match(oldHourSimpleRegex);
+
+    if (matchOldFull && matchOldFull[1]) {
+      let h = parseInt(matchOldFull[1], 10);
+      const period = matchOldFull[3];
+      if (period === 'siang' && h >= 1 && h < 12) h += 12;
+      if (period === 'sore' && h >= 1 && h < 12) h += 12;
+      if (period === 'malam' && h >= 1 && h < 12) h += 12;
+      targetOldHour = h;
+    } else if (matchOldSimple && matchOldSimple[1]) {
+      let h = parseInt(matchOldSimple[1], 10);
+      const period = matchOldSimple[2];
+      if (period === 'siang' && h >= 1 && h < 12) h += 12;
+      if (period === 'sore' && h >= 1 && h < 12) h += 12;
+      if (period === 'malam' && h >= 1 && h < 12) h += 12;
+      targetOldHour = h;
+    }
+
+    const topicMatch = oldPart.match(/(?:tim|untuk|dengan|buat|topik)\s+([a-zA-Z0-9\s-_]+)/i);
+    if (topicMatch && topicMatch[1]) {
+      const candidate = topicMatch[1]
+        .replace(/jam\s*\d+/gi, '')
+        .replace(/\b(?:zoom|meeting|miting)\b/gi, '')
+        .trim();
+      if (candidate.length > 1) {
+        targetTopic = candidate;
+      }
+    }
+  }
+
+  // 4. Ekstrak waktu baru dari newPart
+  let newHour = null;
+  let newMinute = 0;
+  let dayOffset = 0;
+  const newPartLower = newPart.toLowerCase();
+
+  if (newPartLower.includes('besok')) dayOffset = 1;
+  else if (newPartLower.includes('lusa')) dayOffset = 2;
+
+  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
+  const hourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
+
+  const matchFull = newPartLower.match(timeRegex);
+  const matchSimple = newPartLower.match(hourSimpleRegex);
+
+  if (matchFull) {
+    let hour = parseInt(matchFull[1], 10);
+    newMinute = parseInt(matchFull[2], 10);
+    const period = matchFull[3];
+    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
+    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
+    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
+    newHour = hour;
+  } else if (matchSimple) {
+    let hour = parseInt(matchSimple[1], 10);
+    const period = matchSimple[2];
+    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
+    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
+    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
+    newHour = hour;
+  }
+
+  // 5. Cek apakah ada perubahan topik baru
+  let newTopic = null;
+  if (oldPart.toLowerCase().includes('topik') || oldPart.toLowerCase().includes('judul')) {
+    if (newPart) {
+      newTopic = newPart
+        .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+        .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+        .replace(/besok|lusa|hari ini/gi, '')
+        .trim();
+    }
+  } else {
+    const topicKeywordMatch = text.match(/(?:topik|judul)\s+(?:baru\s+)?(?:jadi|menjadi|ke)?\s*[:=]?\s*([a-zA-Z0-9\s-_]+)/i);
+    if (topicKeywordMatch && topicKeywordMatch[1]) {
+      newTopic = topicKeywordMatch[1]
+        .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}/gi, '')
+        .replace(/jam\s*\d{1,2}/gi, '')
+        .replace(/besok|lusa|hari ini/gi, '')
+        .trim();
+    }
+  }
+
+  // Hitung ISO waktu baru jika jam baru terdeteksi
+  let newStartTime = null;
+  if (newHour !== null) {
+    const nowTz = getNowInTimezone(defaultTz);
+    let targetYear = nowTz.year;
+    let targetMonth = nowTz.month;
+    let targetDay = nowTz.day;
+
+    if (dayOffset > 0) {
+      const d = new Date(targetYear, targetMonth - 1, targetDay + dayOffset);
+      targetYear = d.getFullYear();
+      targetMonth = d.getMonth() + 1;
+      targetDay = d.getDate();
+    }
+
+    const yyyy = targetYear;
+    const mm = String(targetMonth).padStart(2, '0');
+    const dd = String(targetDay).padStart(2, '0');
+    const hh = String(newHour).padStart(2, '0');
+    const min = String(newMinute).padStart(2, '0');
+    const offset = getTimezoneOffsetString(defaultTz);
+
+    newStartTime = `${yyyy}-${mm}-${dd}T${hh}:${min}:00${offset}`;
+  }
+
+  return {
+    isEditCommand: true,
+    meetingId,
+    targetOldHour,
+    targetTopic,
+    newStartTime,
+    newHour,
+    newMinute,
+    newTopic
+  };
+}
+
+/**
+ * Parsing perintah bantuan / panduan (!info, !help, !menu, dll),
+ * sapaan di Personal Chat (PC), atau bot di-tag di grup tanpa perintah tertentu.
+ * 
+ * @param {string} messageText 
+ * @param {object} options
+ * @param {boolean} options.isGroup
+ * @param {boolean} options.isBotMentioned
+ * @param {boolean} options.isPrivateChat
+ * @returns {object|null}
+ */
+export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned = false, isPrivateChat = false } = {}) {
+  // Jika bot di-mention di grup dan teks kosong / hanya whitespace
+  if (isGroup && isBotMentioned && (!messageText || typeof messageText !== 'string' || messageText.trim() === '')) {
+    return { isHelpCommand: true, trigger: 'group_mention' };
+  }
+
+  if (!messageText || typeof messageText !== 'string') return null;
+
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  // 1. Perintah eksplisit untuk panduan / bantuan
+  const isExplicitHelp = /^[!/#](?:info|help|menu|panduan|bantuan|petunjuk)\b/i.test(lower) ||
+                         /^(?:info\s+zoom|menu\s+bot|bantuan|panduan|petunjuk|cara\s+(?:pakai|booking|pesan|buat|jadwal(?:kan)?|edit|ubah|hapus|batal)|help|info)$/i.test(lower);
+
+  if (isExplicitHelp) {
+    return { isHelpCommand: true, trigger: 'explicit' };
+  }
+
+  // 2. Jika bot di-tag/di-mention di grup
+  if (isGroup && isBotMentioned) {
+    // Periksa apakah pesan mengandung aksi spesifik
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record)/i.test(lower);
+    if (!hasSpecificAction) {
+      return { isHelpCommand: true, trigger: 'group_mention' };
+    }
+  }
+
+  // 3. Jika di Personal Chat (PC)
+  if (isPrivateChat) {
+    const isGreeting = /^(?:halo|hai|hi|hey|hello|assalamu['’]?alaikum|selamat\s+(?:pagi|siang|sore|malam)|permisi|p|ping|tes|test|min|bot|admin|assalamualaikum)[!.,? ]*$/i.test(lower) ||
+                       /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
+                       /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
+
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record)/i.test(lower);
+
+    if (isGreeting && !hasSpecificAction) {
+      return { isHelpCommand: true, trigger: 'private_greeting' };
+    }
+  }
+
+  return null;
+}
+
 

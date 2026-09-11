@@ -190,6 +190,49 @@ export async function deleteZoomMeeting(meetingId) {
 }
 
 /**
+ * Memperbarui data meeting yang sudah ada di akun Zoom via REST API.
+ * 
+ * @param {string|number} meetingId
+ * @param {Object} updateData
+ * @param {string} [updateData.topic]
+ * @param {string} [updateData.startTime]
+ * @param {number} [updateData.duration]
+ * @param {string} [updateData.timezone]
+ * @returns {Promise<boolean>}
+ */
+export async function updateZoomMeeting(meetingId, {
+  topic,
+  startTime,
+  duration,
+  timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
+} = {}) {
+  if (!meetingId) throw new Error('Meeting ID diperlukan untuk memperbarui meeting.');
+  const accessToken = await getZoomAccessToken();
+
+  const bodyPayload = {};
+  if (topic) bodyPayload.topic = topic;
+  if (startTime) bodyPayload.start_time = startTime;
+  if (duration) bodyPayload.duration = Number(duration);
+  if (timezone) bodyPayload.timezone = timezone;
+
+  const response = await fetch(`https://api.zoom.us/v2/meetings/${meetingId}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(bodyPayload)
+  });
+
+  if (response.status === 204 || response.status === 200) {
+    return true;
+  }
+
+  const errorText = await response.text();
+  throw new Error(`Gagal memperbarui meeting di Zoom (${response.status}): ${errorText}`);
+}
+
+/**
  * Memulai perekaman Cloud pada meeting yang sedang berlangsung (live) atau terjadwal.
  * Mengaktifkan setting auto_recording cloud dan mengirim sinyal recording.start ke live meeting.
  * 

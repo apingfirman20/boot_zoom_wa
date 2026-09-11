@@ -12,11 +12,14 @@ import {
   parseMeetingCommand,
   parseCancelCommand,
   parseListCommand,
-  parseLiveRecordCommand
+  parseLiveRecordCommand,
+  parseEditCommand,
+  parseHelpCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
   deleteZoomMeeting,
+  updateZoomMeeting,
   startLiveMeetingRecording,
   getMeetingRecordings,
   getPastMeetingDetails,
@@ -31,6 +34,7 @@ import {
 import {
   checkScheduleConflict,
   saveScheduledMeeting,
+  updateScheduledMeeting,
   getNearbyUpcomingMeeting,
   getActiveMeetings,
   removeScheduledMeeting,
@@ -78,6 +82,49 @@ console.error = function (...args) {
   try { if (logStream) logStream.write(line); } catch (e) {}
   origError.apply(console, args);
 };
+
+/**
+ * Format pesan instruksi / panduan bot yang lengkap, rapi, dan informatif.
+ */
+function formatHelpMessage(senderName = 'Kak/Pak/Bu') {
+  return [
+    `👋 Halo *${senderName}*! Saya adalah *Bot Asisten Zoom Meeting*.`,
+    `Berikut panduan lengkap cara menggunakan bot ini:`,
+    ``,
+    `➕ *1. CARA MEMBUAT / ADD JADWAL ZOOM*`,
+    `Cukup ketik permintaan dengan menyebutkan jam dan topik secara natural:`,
+    `• _"buatkan zoom jam 2 siang dengan tim finance"_`,
+    `• _"zoom besok jam 10 pagi topik review bulanan"_`,
+    `• _"minta link zoom sekarang untuk rapat direksi"_`,
+    `• _"buat zoom jam 3 sore topik pitching klien rekam"_ *(Auto Recording Cloud)*`,
+    ``,
+    `📅 *2. CARA CEK JADWAL ZOOM*`,
+    `Untuk melihat semua jadwal meeting yang aktif / terjadwal:`,
+    `• _"cek jadwal zoom"_`,
+    `• _"lihat jadwal"_`,
+    `• _"!jadwal"_ atau _"!list"_`,
+    ``,
+    `✏️ *3. CARA EDIT / UBAH JADWAL ZOOM*`,
+    `Untuk memindahkan jam atau mengubah topik meeting yang sudah dibuat:`,
+    `• _"ubah zoom jam 2 siang jadi jam 4 sore"_`,
+    `• _"ganti jadwal zoom tim finance ke besok jam 10 pagi"_`,
+    `• _"reschedule zoom [Meeting ID] ke jam 3 sore"_`,
+    `• _"edit topik zoom jam 2 jadi Koordinasi Q3"_`,
+    ``,
+    `🗑️ *4. CARA DELETE / BATALKAN ZOOM*`,
+    `Untuk membatalkan jadwal meeting tertentu:`,
+    `• _"hapus zoom jam 2 siang"_`,
+    `• _"batalkan zoom tim finance"_`,
+    `• _"hapus zoom [Meeting ID]"_`,
+    `• _"!batal"_`,
+    ``,
+    `🎬 *5. REKAM LIVE MEETING (Sedang Berlangsung)*`,
+    `Jika meeting sudah berjalan dan ingin direkam ke Cloud:`,
+    `• _"rekam"_ atau _"rekam zoom sekarang"_ atau _"!rekam"_`,
+    ``,
+    `💡 _Tips: Di grup WhatsApp, Anda juga bisa tag/mention saya untuk meminta jadwal!_`
+  ].join('\n');
+}
 
 /**
  * Mengirim pesan notifikasi video rekaman dan password ke nomor pemesan / yang meminta rekam.
@@ -604,6 +651,21 @@ async function startBot() {
       const remoteJid = msg.key.remoteJid;
       const senderName = msg.pushName || 'Teman';
       const isFromMe = msg.key.fromMe;
+      const isGroup = remoteJid.endsWith('@g.us');
+      const isPrivateChat = !isGroup;
+
+      // Cek apakah bot di-tag / di-mention di grup
+      const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+      const mentionedJid = contextInfo?.mentionedJid || [];
+      const botNumber = sock.user?.id ? sock.user.id.split(':')[0] : '';
+      const isBotMentioned = Boolean(botNumber && mentionedJid.some(jid => jid.startsWith(botNumber)));
+
+      // Bersihkan mention tag bot dari teks (misal "@62812345678 buatkan zoom jam 2")
+      let cleanText = messageText.trim();
+      if (botNumber) {
+        cleanText = cleanText.replace(new RegExp(`@${botNumber}\\b`, 'gi'), '').trim();
+      }
+      cleanText = cleanText.replace(/^@bot\b/i, '').trim();
 
       // Cegah looping jika pesan merupakan balasan dari bot itu sendiri
       if (
@@ -614,6 +676,7 @@ async function startBot() {
         messageText.startsWith('✅ *Jadwal Zoom') ||
         messageText.startsWith('📅') ||
         messageText.startsWith('🎬') ||
+        messageText.startsWith('👋 Halo') ||
         messageText.startsWith('Maaf ')
       ) {
         continue;
@@ -622,9 +685,9 @@ async function startBot() {
       // -----------------------------------------------------------------------
       // A. CEK PERINTAH BATALKAN / HAPUS MEETING
       // -----------------------------------------------------------------------
-      const cancelCmd = parseCancelCommand(messageText);
+      const cancelCmd = parseCancelCommand(cleanText);
       if (cancelCmd) {
-        console.log(`\n🗑️ [Perintah Batal Masuk] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+        console.log(`\n🗑️ [Perintah Batal Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
         try {
           await sock.readMessages([msg.key]);
 
@@ -678,11 +741,100 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // B. CEK PERINTAH LIHAT DAFTAR JADWAL ZOOM
+      // B. CEK PERINTAH UBAH / EDIT / RESCHEDULE JADWAL MEETING
       // -----------------------------------------------------------------------
-      const listCmd = parseListCommand(messageText);
+      const editCmd = parseEditCommand(cleanText);
+      if (editCmd) {
+        console.log(`\n✏️ [Perintah Edit Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+
+          const activeMeetings = getActiveMeetings();
+          let matchedMeeting = null;
+
+          if (editCmd.meetingId) {
+            matchedMeeting = activeMeetings.find(m => String(m.id).includes(editCmd.meetingId));
+          } else if (editCmd.targetOldHour !== null) {
+            matchedMeeting = activeMeetings.find(m => {
+              const d = new Date(m.startTime);
+              return d.getHours() === editCmd.targetOldHour;
+            });
+          } else if (editCmd.targetTopic) {
+            const term = editCmd.targetTopic.toLowerCase();
+            matchedMeeting = activeMeetings.find(m => (m.topic || '').toLowerCase().includes(term));
+          } else if (activeMeetings.length === 1) {
+            matchedMeeting = activeMeetings[0];
+          }
+
+          if (!matchedMeeting) {
+            const noMatchText = `Mohon maaf Pak/Bu, tidak ditemukan jadwal meeting Zoom yang cocok untuk diubah.\nKetik *cek jadwal zoom* untuk melihat jadwal yang masih aktif.`;
+            await sock.sendMessage(remoteJid, { text: noMatchText }, { quoted: msg });
+            continue;
+          }
+
+          const newStartTime = editCmd.newStartTime || matchedMeeting.startTime;
+          const newTopic = editCmd.newTopic || matchedMeeting.topic;
+          const duration = matchedMeeting.duration || 60;
+
+          // Cek bentrok jika waktu berubah
+          if (editCmd.newStartTime && editCmd.newStartTime !== matchedMeeting.startTime) {
+            const { hasConflict, conflictingMeeting } = await checkScheduleConflict(newStartTime, duration, matchedMeeting.id);
+            if (hasConflict && conflictingMeeting) {
+              const confTime = formatMeetingTime(conflictingMeeting.startTime);
+              const replyConflict = `Mohon maaf Pak/Bu, tidak dapat mengubah jadwal ke jam tersebut karena di jam segitu (${confTime}) sudah ada meeting tim *${conflictingMeeting.topic}*. Mohon pilih jam lain ya.`;
+              await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
+              continue;
+            }
+          }
+
+          // Panggil Zoom API untuk update meeting
+          try {
+            await updateZoomMeeting(matchedMeeting.id, {
+              topic: newTopic,
+              startTime: newStartTime,
+              duration: duration
+            });
+          } catch (zoomUpdateErr) {
+            console.error('Gagal update meeting di server Zoom:', zoomUpdateErr.message);
+            const errMsg = `Mohon maaf, terjadi kendala saat memperbarui meeting di Zoom: ${zoomUpdateErr.message}`;
+            await sock.sendMessage(remoteJid, { text: errMsg }, { quoted: msg });
+            continue;
+          }
+
+          // Perbarui di database lokal
+          updateScheduledMeeting(matchedMeeting.id, {
+            topic: newTopic,
+            startTime: newStartTime,
+            duration: duration
+          });
+
+          const formattedNewTime = formatMeetingTime(newStartTime);
+          const replySuccessEdit = [
+            `✅ *Jadwal Zoom Berhasil Diperbarui / Reschedule:*`,
+            `📌 *Topik:* ${newTopic}`,
+            `🗓️ *Waktu Baru:* ${formattedNewTime}`,
+            `🆔 *Meeting ID:* ${matchedMeeting.id}`,
+            matchedMeeting.passcode ? `🔑 *Passcode:* ${matchedMeeting.passcode}` : null,
+            `🔗 *Link Zoom:*`,
+            `${matchedMeeting.joinUrl}`,
+            ``,
+            `Link meeting tetap sama dan jadwal sudah terupdate di server Zoom.`
+          ].filter(Boolean).join('\n');
+
+          await sock.sendMessage(remoteJid, { text: replySuccessEdit }, { quoted: msg });
+          console.log(`✅ Meeting ${matchedMeeting.id} berhasil diupdate ke waktu: ${formattedNewTime}, topik: ${newTopic}`);
+        } catch (editErr) {
+          console.error('❌ Error memproses edit meeting:', editErr);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // C. CEK PERINTAH LIHAT DAFTAR JADWAL ZOOM
+      // -----------------------------------------------------------------------
+      const listCmd = parseListCommand(cleanText);
       if (listCmd) {
-        console.log(`\n📋 [Perintah Cek Jadwal] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+        console.log(`\n📋 [Perintah Cek Jadwal] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
         try {
           await sock.readMessages([msg.key]);
 
@@ -708,6 +860,7 @@ async function startBot() {
           });
 
           lines.push(`_Untuk membatalkan jadwal, contoh: "hapus zoom jam ${new Date(validMeetings[0].startTime).getHours()}"_`);
+          lines.push(`_Untuk mengubah jadwal, contoh: "ubah zoom jam ${new Date(validMeetings[0].startTime).getHours()} jadi jam 4 sore"_`);
 
           await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg });
         } catch (listErr) {
@@ -717,11 +870,11 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // C. CEK PERINTAH REKAM LIVE (Meeting Sedang Berlangsung)
+      // D. CEK PERINTAH REKAM LIVE (Meeting Sedang Berlangsung)
       // -----------------------------------------------------------------------
-      const liveRecCmd = parseLiveRecordCommand(messageText);
+      const liveRecCmd = parseLiveRecordCommand(cleanText);
       if (liveRecCmd) {
-        console.log(`\n📹 [Perintah Rekam Live Masuk] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+        console.log(`\n📹 [Perintah Rekam Live Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
         try {
           await sock.readMessages([msg.key]);
 
@@ -743,7 +896,6 @@ async function startBot() {
 
           const replyLive = [
             `🎬 *Perekaman Meeting Zoom Diaktifkan!*`,
-            ``,
             `📌 *Topik:* ${liveMeeting.topic}`,
             `🆔 *Meeting ID:* ${liveMeeting.id}`,
             ``,
@@ -759,16 +911,33 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // D. PROSES PERINTAH MEMBUAT MEETING ZOOM
+      // E. CEK PERINTAH BANTUAN / PANDUAN (!info, !help, Mention Grup, Sapaan PC)
       // -----------------------------------------------------------------------
-      const command = parseMeetingCommand(messageText);
+      const helpCmd = parseHelpCommand(cleanText, { isGroup, isBotMentioned, isPrivateChat });
+      if (helpCmd) {
+        console.log(`\n💡 [Petunjuk/Panduan Diminta] Dari: ${senderName} (${remoteJid}, trigger: ${helpCmd.trigger}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+          const helpText = formatHelpMessage(senderName);
+          await sock.sendMessage(remoteJid, { text: helpText }, { quoted: msg });
+          console.log(`✅ Pesan bantuan berhasil dikirimkan ke ${remoteJid}`);
+        } catch (helpErr) {
+          console.error('❌ Error mengirim pesan bantuan:', helpErr);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // F. PROSES PERINTAH MEMBUAT MEETING ZOOM
+      // -----------------------------------------------------------------------
+      const command = parseMeetingCommand(cleanText);
 
       // Jika TIDAK ADA kata kunci perintah meeting, abaikan sama sekali (tidak perlu dijawab)
       if (!command) {
         continue;
       }
 
-      console.log(`\n📩 [Perintah Meeting Masuk] Dari: ${senderName} (${remoteJid}): "${messageText}"`);
+      console.log(`\n📩 [Perintah Meeting Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
       console.log(`📋 [Hasil Parser Template] Topik: "${command.topic}", Waktu: ${command.startTime}, AutoRecord: ${command.autoRecord}`);
 
       try {
