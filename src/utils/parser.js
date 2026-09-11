@@ -70,12 +70,13 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, atau info/panduan
+  // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, summary/rekap, atau info/panduan
   const isCancel = /(?:hapus|batal(?:kan)?|cancel|delete)/i.test(lower);
   const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+zoom|daftar\s+zoom|list\s+zoom|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
   const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
   const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
-  if (isCancel || isList || isEdit || isHelp) {
+  const isSummary = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower) || /^(?:rekap|summary|notula|ringkasan)/i.test(lower);
+  if (isCancel || isList || isEdit || isHelp || isSummary) {
     return null;
   }
 
@@ -595,6 +596,40 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
   }
 
   return null;
+}
+
+/**
+ * Memeriksa apakah pesan adalah perintah untuk melihat rekap kehadiran atau notula AI Zoom.
+ * Contoh:
+ * - "!rekap", "!summary", "!notula", "!ringkasan"
+ * - "rekap meeting", "summary meeting", "rekap zoom", "notula rapat", "ringkasan zoom"
+ * - "rekap 87103747663", "!summary 87103747663"
+ * 
+ * @param {string} messageText
+ * @returns {{ isSummaryCommand: boolean, meetingId: string|null }|null}
+ */
+export function parseSummaryCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  const isPrefix = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower);
+  const isNatural = /^(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|hasil)?\b/i.test(lower) ||
+                    /^(?:rekap(?:an)?|summary|notula|ringkasan)$/i.test(lower) ||
+                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:meeting|rapat|zoom)\b/i.test(lower);
+
+  if (!isPrefix && !isNatural) {
+    return null;
+  }
+
+  // Cari apakah user menyertakan Meeting ID (angka 9-11 digit)
+  const idMatch = text.match(/\b(\d{9,11})\b/);
+  const meetingId = idMatch ? idMatch[1] : null;
+
+  return {
+    isSummaryCommand: true,
+    meetingId
+  };
 }
 
 

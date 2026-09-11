@@ -337,6 +337,36 @@ export async function getMeetingRecordings(meetingId) {
 /**
  * Mengambil detail meeting yang telah selesai (start_time, end_time, duration aktual, participants_count).
  * 
+/**
+ * Mengambil daftar meeting Zoom yang baru saja selesai diselenggarakan.
+ * 
+ * @param {number} [limit=5]
+ * @returns {Promise<Array<{ id: string, topic: string, startTime: string, duration: number }>>}
+ */
+export async function getRecentEndedMeetings(limit = 5) {
+  try {
+    const accessToken = await getZoomAccessToken();
+    const res = await fetch(`https://api.zoom.us/v2/users/me/meetings?type=previous_meetings&page_size=${limit}`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data.meetings)) return [];
+    return data.meetings.map(m => ({
+      id: String(m.id),
+      topic: m.topic || 'Zoom Meeting',
+      startTime: m.start_time || '',
+      duration: Number(m.duration) || 0
+    }));
+  } catch (err) {
+    console.error('Gagal mengambil daftar previous meetings dari Zoom:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Mengambil informasi detail meeting yang telah selesai dari server Zoom.
+ * 
  * @param {string|number} meetingId
  * @returns {Promise<{
  *   id: string,
@@ -533,12 +563,35 @@ export async function getZoomMeetingSummary(meetingId) {
   try {
     const accessToken = await getZoomAccessToken();
     const encodedId = encodeURIComponent(String(meetingId).trim());
-    const response = await fetch(`https://api.zoom.us/v2/meetings/${encodedId}/meeting_summary`, {
+    let response = await fetch(`https://api.zoom.us/v2/meetings/${encodedId}/meeting_summary`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${accessToken}`
       }
     });
+
+    // Zoom API requires double-encoded UUID for meeting summary of ended meetings if numeric ID returns 400 (code 300)
+    if (!response.ok) {
+      try {
+        const pastRes = await fetch(`https://api.zoom.us/v2/past_meetings/${encodedId}`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        if (pastRes.ok) {
+          const pastData = await pastRes.json();
+          if (pastData.uuid) {
+            const doubleEncodedUuid = encodeURIComponent(encodeURIComponent(pastData.uuid));
+            const retryRes = await fetch(`https://api.zoom.us/v2/meetings/${doubleEncodedUuid}/meeting_summary`, {
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+            if (retryRes.ok) {
+              response = retryRes;
+            }
+          }
+        }
+      } catch (e) {
+        // Fallback error ignored
+      }
+    }
 
     if (!response.ok) {
       if (response.status === 401) {
@@ -568,7 +621,8 @@ export async function getZoomMeetingSummary(meetingId) {
       summaryTitle: data.summary_title || '',
       summaryOverview: data.summary_overview || '',
       summaryDetails,
-      nextSteps
+      nextSteps,
+      summaryDocUrl: data.summary_doc_url || ''
     };
   } catch (err) {
     console.error(`Gagal mengambil summary Zoom AI untuk meeting ${meetingId}:`, err.message);

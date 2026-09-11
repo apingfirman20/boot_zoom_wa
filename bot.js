@@ -14,7 +14,8 @@ import {
   parseListCommand,
   parseLiveRecordCommand,
   parseEditCommand,
-  parseHelpCommand
+  parseHelpCommand,
+  parseSummaryCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -24,7 +25,8 @@ import {
   getMeetingRecordings,
   getPastMeetingDetails,
   getPastMeetingParticipants,
-  getZoomMeetingSummary
+  getZoomMeetingSummary,
+  getRecentEndedMeetings
 } from './src/services/zoom.js';
 import {
   formatMeetingTime,
@@ -124,6 +126,11 @@ function formatHelpMessage(senderName = 'Kak/Pak/Bu') {
     `Jika meeting sudah berjalan dan ingin direkam ke Cloud:`,
     `• _"rekam"_ atau _"rekam zoom sekarang"_ atau _"!rekam"_`,
     ``,
+    `📊 *6. REKAP KEHADIRAN & NOTULA ZOOM AI*`,
+    `Untuk melihat daftar peserta hadir dan notula AI rapat yang selesai:`,
+    `• _"rekap"_ atau _"rekap meeting"_ *(otomatis ambil rapat yang baru selesai)*`,
+    `• _"!rekap [Meeting ID]"_ atau _"!summary [Meeting ID]"_`,
+    ``,
     `💡 _Tips: Di grup WhatsApp, Anda juga bisa tag/mention saya untuk meminta jadwal!_`
   ].join('\n');
 }
@@ -191,19 +198,39 @@ setInterval(() => {
 /**
  * Mengirim laporan rekap meeting (peserta yang bergabung dan total durasi aktual) ke pemesan.
  */
-async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
-  if (!globalSock) return;
-  const meeting = getScheduledMeetingById(meetingId);
-  if (!meeting) return;
-
-  if (meeting.summarySent) {
-    return; // Sudah pernah dikirim
+async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRecipient = null) {
+  if (!globalSock) return false;
+  let meeting = getScheduledMeetingById(meetingId);
+  
+  // Jika meeting tidak terdaftar di database lokal (misal dibuat langsung dari web/aplikasi Zoom)
+  if (!meeting) {
+    try {
+      const pastDetails = await getPastMeetingDetails(meetingId);
+      meeting = {
+        id: String(meetingId),
+        topic: pastDetails?.topic || webhookObject?.topic || 'Zoom Meeting',
+        startTime: pastDetails?.startTime || webhookObject?.start_time || new Date().toISOString(),
+        duration: pastDetails?.duration || webhookObject?.duration || 60,
+        requesterPhone: targetRecipient || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE || null,
+        recordRequesterPhone: null,
+        summarySent: false
+      };
+    } catch (e) {
+      // Ignored
+    }
   }
 
-  const targetPhone = meeting.requesterPhone || meeting.recordRequesterPhone;
+  if (!meeting) return false;
+
+  // Jika targetRecipient diberikan secara eksplisit (misal user meminta via chat), kirim meskipun summarySent=true
+  if (meeting.summarySent && !targetRecipient) {
+    return false; // Sudah pernah dikirim otomatis
+  }
+
+  const targetPhone = targetRecipient || meeting.requesterPhone || meeting.recordRequesterPhone || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE;
   if (!targetPhone) {
     console.warn(`⚠️ Tidak ada nomor tujuan untuk mengirim rekap meeting ${meeting.id}`);
-    return;
+    return false;
   }
 
   console.log(`📊 Mengumpulkan data rekap peserta untuk meeting ${meeting.id} (${meeting.topic})...`);
@@ -283,7 +310,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
     `━━━━━━━━━━━━━━━━━━━`
   ];
 
-  if (aiSummary && (aiSummary.summaryOverview || aiSummary.summaryDetails.length > 0 || aiSummary.nextSteps.length > 0)) {
+  if (aiSummary && (aiSummary.summaryOverview || aiSummary.summaryDetails?.length > 0 || aiSummary.nextSteps?.length > 0)) {
     summaryMsg.push(``);
     summaryMsg.push(`🤖 *RINGKASAN & NOTULA RAPAT (ZOOM AI)*`);
     if (aiSummary.summaryOverview) {
@@ -306,6 +333,10 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
         summaryMsg.push(`${idx + 1}. ${s}`);
       });
     }
+    if (aiSummary.summaryDocUrl) {
+      summaryMsg.push(``);
+      summaryMsg.push(`📄 *Dokumen Notula Lengkap:* ${aiSummary.summaryDocUrl}`);
+    }
     summaryMsg.push(``);
     summaryMsg.push(`━━━━━━━━━━━━━━━━━━━`);
     summaryMsg.push(`_Laporan kehadiran & notula otomatis disusun oleh Zoom AI._`);
@@ -320,8 +351,10 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
       summarySent: true,
       aiSummarySent: Boolean(aiSummary)
     });
+    return true;
   } catch (sendErr) {
     console.error(`Gagal mengirim laporan rekap ke ${targetPhone}:`, sendErr.message);
+    return false;
   }
 }
 
@@ -409,15 +442,31 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
  */
 async function pollPendingSummaries() {
   if (!globalSock) return;
-  const pending = getMeetingsPendingSummary();
-  if (pending.length === 0) return;
 
+  // 1. Cek meeting terjadwal di database jadwal lokal
+  const pending = getMeetingsPendingSummary();
   for (const m of pending) {
     try {
       const pastDetails = await getPastMeetingDetails(m.id);
       if (pastDetails && (pastDetails.endTime || pastDetails.duration > 0)) {
         console.log(`🏁 Mendeteksi meeting ${m.id} (${m.topic}) telah selesai di Zoom, memproses rekap...`);
         await sendMeetingEndedSummary(m.id, pastDetails);
+      }
+    } catch (err) {
+      // Ignored
+    }
+  }
+
+  // 2. Cek meeting Zoom terbaru yang baru saja selesai (termasuk yang dibuat langsung di Zoom)
+  const defaultRecipient = process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE;
+  if (defaultRecipient) {
+    try {
+      const recentEnded = await getRecentEndedMeetings(3);
+      for (const rm of recentEnded) {
+        const local = getScheduledMeetingById(rm.id);
+        if (!local || !local.summarySent) {
+          await sendMeetingEndedSummary(rm.id, null, defaultRecipient);
+        }
       }
     } catch (err) {
       // Ignored
@@ -681,6 +730,57 @@ const server = http.createServer(async (req, res) => {
       activeMeetingsCount: getActiveMeetings().length,
       uptimeSeconds: Math.floor(process.uptime())
     }));
+  }
+
+  // API Cek Notula & Rekap Meeting Terakhir (JSON)
+  if (req.url.startsWith('/api/latest-summary')) {
+    try {
+      const recent = await getRecentEndedMeetings(1);
+      if (recent.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: 'Belum ada meeting yang selesai.' }));
+      }
+      const mId = recent[0].id;
+      const details = await getPastMeetingDetails(mId);
+      const participants = await getPastMeetingParticipants(mId);
+      const aiSummary = await getZoomMeetingSummary(mId);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({
+        meeting: details || recent[0],
+        participants,
+        aiSummary
+      }, null, 2));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  // API Kirim Rekap Manual ke WhatsApp via HTTP
+  if (req.url.startsWith('/api/send-summary')) {
+    try {
+      const urlObj = new URL(req.url, `http://${req.headers.host}`);
+      let meetingId = urlObj.searchParams.get('meetingId');
+      const phoneParam = urlObj.searchParams.get('phone');
+      const phone = phoneParam ? (phoneParam.includes('@') ? phoneParam : `${phoneParam}@s.whatsapp.net`) : null;
+
+      if (!meetingId) {
+        const recent = await getRecentEndedMeetings(1);
+        if (recent.length > 0) meetingId = recent[0].id;
+      }
+
+      if (!meetingId) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: 'Meeting ID tidak ditemukan.' }));
+      }
+
+      const ok = await sendMeetingEndedSummary(meetingId, null, phone);
+      res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ success: ok, meetingId, sentTo: phone }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: err.message }));
+    }
   }
 
   // Dashboard Web / Scan QR
@@ -1079,7 +1179,45 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // E. CEK PERINTAH BANTUAN / PANDUAN (!info, !help, Mention Grup, Sapaan PC)
+      // E. CEK PERINTAH REKAP KEHADIRAN & NOTULA ZOOM AI (!rekap, !summary, rekap meeting)
+      // -----------------------------------------------------------------------
+      const summaryCmd = parseSummaryCommand(cleanText);
+      if (summaryCmd) {
+        console.log(`\n📊 [Perintah Rekap/Summary Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+
+          let targetMeetingId = summaryCmd.meetingId;
+          if (!targetMeetingId) {
+            const recent = await getRecentEndedMeetings(1);
+            if (recent.length > 0) {
+              targetMeetingId = recent[0].id;
+            }
+          }
+
+          if (!targetMeetingId) {
+            const replyNoMeeting = `Maaf Pak/Bu, tidak ditemukan meeting yang baru selesai di akun Zoom.\nAnda bisa menyertakan Meeting ID secara spesifik, contoh:\n*!rekap 87103747663*`;
+            await sock.sendMessage(remoteJid, { text: replyNoMeeting }, { quoted: msg });
+            continue;
+          }
+
+          await sock.sendMessage(remoteJid, {
+            text: `⏳ Sedang mengumpulkan data kehadiran dan notula AI untuk meeting ID *${targetMeetingId}*, mohon tunggu sebentar...`
+          }, { quoted: msg });
+
+          const ok = await sendMeetingEndedSummary(targetMeetingId, null, remoteJid);
+          if (!ok) {
+            const failMsg = `⚠️ Maaf, belum dapat mengambil rekap untuk meeting ID *${targetMeetingId}*.\nPastikan meeting tersebut sudah berakhir di server Zoom.`;
+            await sock.sendMessage(remoteJid, { text: failMsg }, { quoted: msg });
+          }
+        } catch (sumErr) {
+          console.error('❌ Error memproses perintah rekap/summary:', sumErr);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // F. CEK PERINTAH BANTUAN / PANDUAN (!info, !help, Mention Grup, Sapaan PC)
       // -----------------------------------------------------------------------
       const helpCmd = parseHelpCommand(cleanText, { isGroup, isBotMentioned, isPrivateChat });
       if (helpCmd) {
