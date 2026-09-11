@@ -1,6 +1,64 @@
 import { getTimezoneOffsetString, getNowInTimezone } from './datetime.js';
 
 /**
+ * Menormalkan jam (1-12) ke format 24 jam dengan pemahaman waktu meeting di Indonesia (AM/PM).
+ * 
+ * Aturan:
+ * 1. Jika sudah 24 jam (misal 13-23), biarkan.
+ * 2. Jika ada penanda eksplisit:
+ *    - 'siang', 'sore', 'malam': jika 1 s.d. 11, tambah 12. (12 siang tetap 12, 12 malam jadi 0).
+ *    - 'pagi', 'subuh': jika 12, jadi 0. Jika 1 s.d. 11, tetap.
+ * 3. Jika TANPA penanda waktu (misal hanya "jam 3", "jam 1", "jam 8"):
+ *    - jam 1 s.d. 6: otomatis dianggap SIANG/SORE (13.00 - 18.00) karena meeting bisnis tidak diadakan jam 1-6 pagi.
+ *    - jam 7 s.d. 11:
+ *      * Jika hari ini (dayOffset === 0) dan jam sekarang sudah melewati jam tersebut (currentHour > h): otomatis MALAM (+12).
+ *      * Contoh: saat ini jam 13.00, user mengetik "zoom jam 8", berarti jam 20.00 (malam).
+ *      * Jika belum lewat atau untuk besok: tetap pagi (07.00 - 11.00).
+ *    - jam 12: tetap 12 (siang).
+ */
+export function normalizeHour(hour, period = null, { dayOffset = 0, currentHour = 12 } = {}) {
+  let h = parseInt(hour, 10);
+  if (isNaN(h)) return null;
+
+  // Jika sudah dalam format 24 jam (misal jam 13 s.d 23)
+  if (h > 12) return h;
+
+  const p = period ? period.toLowerCase().trim() : null;
+
+  if (p) {
+    if (p === 'pagi' || p === 'subuh') {
+      return h === 12 ? 0 : h;
+    }
+    if (p === 'siang' || p === 'sore' || p === 'malam') {
+      if (h === 12) {
+        return p === 'malam' ? 0 : 12;
+      }
+      return h < 12 ? h + 12 : h;
+    }
+  }
+
+  // Tanpa penanda eksplisit (konteks cerdas meeting)
+  if (h >= 1 && h <= 6) {
+    // 1 s.d 6 sore/siang (13:00 - 18:00)
+    return h + 12;
+  }
+
+  if (h >= 7 && h <= 11) {
+    // Jika hari ini dan jam pagi tersebut sudah lewat, otomatis jadikan malam (+12)
+    if (dayOffset === 0 && currentHour >= 12 && currentHour > h) {
+      return h + 12;
+    }
+    return h;
+  }
+
+  if (h === 12) {
+    return 12; // 12 siang
+  }
+
+  return h;
+}
+
+/**
  * Parser berbasis Rule/Template (Regex & Keyword Matching).
  * Mengerti perintah Zoom maupun Meeting (misal: "buatkan link meeting jam 1 siang dengan finance").
  * Jika pesan tidak terkait pembuatan meeting, pesan akan diabaikan (tidak dijawab).
@@ -28,7 +86,6 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   }
 
   // 3. Deteksi apakah ini hanya obrolan biasa yang menyebut kata zoom / aplikasi zoom (BUKAN perintah membuat)
-  // Contoh: "bener kok di zoomnya", "aku lagi di zoom", "zoom nya error", "suara di zoom", "buka zoom"
   const isCasualChatAboutZoom = /(?:^|\s)(?:di|pada|dalam)\s+zoom(?:nya)?(?:\s|$)/i.test(lower) ||
                                 /(?:zoom(?:nya)?\s+(?:error|rusak|lemot|bermasalah|ngefreeze|lag|putus|aman|bagus|bisa|gabisa|gak\s+bisa))/i.test(lower) ||
                                 /(?:lagi|sedang)\s+(?:buka|masuk|ikut|ada\s+di)\s+zoom/i.test(lower) ||
@@ -39,17 +96,16 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const isCommandPrefix = /^[!/](?:meeting|zoom)/i.test(lower);
 
   // Kata kerja permintaan pembuatan meeting:
-  // "buatkan zoom", "bikin link zoom", "minta zoom", "jadwalkan zoom", "booking zoom", "order zoom"
   const hasActionVerb = /(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan|in)?|tolong(?:\s+buat(?:kan)?|\s+bikin|\s+link)?|order|pesan|booking|create|generate|setup|siapkan)\s+(?:link\s+)?(?:zoom|meeting|miting)/i.test(lower) ||
                         /(?:ada\s+)?(?:link\s+)(?:zoom|meeting|miting)\s+(?:untuk|buat|jam|besok|sekarang|dong|ya|gak|kah)/i.test(lower) ||
                         /^(?:minta\s+)?link\s+(?:zoom|meeting|miting)(?:\s+(?:dong|ya|kak|pak|bu|min|bang))?$/i.test(lower);
 
-  // Kata "zoom" atau "meeting" yang diikuti penunjuk waktu spesifik (misal: "zoom jam 2 siang", "meeting besok jam 10")
+  // Kata "zoom" atau "meeting" yang diikuti penunjuk waktu spesifik
   const hasZoomWithTime = /(?:zoom|meeting|miting)\s+(?:hari\s+ini\s+|besok\s+|lusa\s+)?(?:jam\s*\d{1,2}|nanti\s+jam|\d{1,2}[.:]\d{2})/i.test(lower);
 
   // Jika tidak memenuhi satu pun kriteria intensi membuat meeting:
   if (!isCommandPrefix && !hasActionVerb && !hasZoomWithTime) {
-    return null; // Abaikan pesan obrolan santai, jangan dijawab & jangan buat zoom!
+    return null;
   }
 
   // Jika terkena pola obrolan santai DAN tidak ada kata kerja perintah yang tegas:
@@ -79,12 +135,11 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   }
 
   // Cek Jam & Menit
-  // Format: "jam 14.00 wib", "14:00 wib", "jam 1 siang", "jam 2.30 sore", "jam 8 pagi", "14.00"
   let matchedHour = null;
   let matchedMinute = 0;
 
-  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
-  const hourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
+  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam|subuh))?/i;
+  const hourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam|subuh))?/i;
 
   const matchFull = lower.match(timeRegex);
   const matchSimple = lower.match(hourSimpleRegex);
@@ -93,19 +148,11 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
     let hour = parseInt(matchFull[1], 10);
     matchedMinute = parseInt(matchFull[2], 10);
     const period = matchFull[3];
-
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    matchedHour = hour;
+    matchedHour = normalizeHour(hour, period, { dayOffset, currentHour: nowTz.hour });
   } else if (matchSimple) {
     let hour = parseInt(matchSimple[1], 10);
     const period = matchSimple[2];
-
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    matchedHour = hour;
+    matchedHour = normalizeHour(hour, period, { dayOffset, currentHour: nowTz.hour });
   }
 
   // Jika TIDAK ADA JAM yang disebutkan:
@@ -259,8 +306,8 @@ export function parseCancelCommand(messageText) {
   // 2. Cek jam jika ada
   let matchedHour = null;
   let matchedMinute = 0;
-  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})\s*(pagi|siang|sore|malam)?/i;
-  const hourSimpleRegex = /jam\s*(\d{1,2})\s*(pagi|siang|sore|malam)?/i;
+  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})\s*(pagi|siang|sore|malam|subuh)?/i;
+  const hourSimpleRegex = /jam\s*(\d{1,2})\s*(pagi|siang|sore|malam|subuh)?/i;
 
   const matchFull = lower.match(timeRegex);
   const matchSimple = lower.match(hourSimpleRegex);
@@ -269,17 +316,11 @@ export function parseCancelCommand(messageText) {
     let hour = parseInt(matchFull[1], 10);
     matchedMinute = parseInt(matchFull[2], 10);
     const period = matchFull[3];
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    matchedHour = hour;
+    matchedHour = normalizeHour(hour, period);
   } else if (matchSimple) {
     let hour = parseInt(matchSimple[1], 10);
     const period = matchSimple[2];
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    matchedHour = hour;
+    matchedHour = normalizeHour(hour, period);
   }
 
   // 3. Cek nama tim / topik jika ada
@@ -287,15 +328,15 @@ export function parseCancelCommand(messageText) {
   const topicMatch = text.match(/(?:tim|buat|untuk|dengan|bahas|tentang)\s+([a-zA-Z0-9\s-_]+)/i);
   if (topicMatch && topicMatch[1]) {
     targetTopic = topicMatch[1]
-      .replace(/sekarang|besok|lusa|jam\s*\d+([.:]\d+)?\s*(pagi|siang|sore|malam)?/gi, '')
+      .replace(/sekarang|besok|lusa|jam\s*\d+([.:]\d+)?\s*(pagi|siang|sore|malam|subuh)?/gi, '')
       .trim();
   } else {
     let cleaned = text
       .replace(/^!(?:hapus|batal|cancel)\s*/i, '')
       .replace(/(?:hapus|batal(?:kan)?|cancel|delete)\s+(?:link\s+)?(?:zoom|meeting|miting|jadwal)?/gi, '')
       .replace(/sekarang|besok|lusa|hari ini/gi, '')
-      .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}\s*(pagi|siang|sore|malam)?/gi, '')
-      .replace(/jam\s*\d{1,2}\s*(pagi|siang|sore|malam)?/gi, '')
+      .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}\s*(pagi|siang|sore|malam|subuh)?/gi, '')
+      .replace(/jam\s*\d{1,2}\s*(pagi|siang|sore|malam|subuh)?/gi, '')
       .replace(/\b\d{9,11}\b/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -336,7 +377,8 @@ export function parseListCommand(messageText) {
  * - "ubah zoom jam 2 siang jadi jam 4 sore"
  * - "ganti jadwal zoom tim marketing ke besok jam 10 pagi"
  * - "reschedule zoom 89234567890 ke jam 3 sore"
- * - "edit topik zoom jam 2 siang jadi Review Project Alpha"
+ * - "edit topik zoom jam 2 jadi Review Project Alpha"
+ * - "ganti jadwal zoom tim finance jadi sekarang saja"
  * 
  * @param {string} messageText 
  * @param {string} defaultTz 
@@ -377,8 +419,8 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
 
   if (oldPart) {
     const oldPartLower = oldPart.toLowerCase();
-    const oldTimeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})?(?:\s*(pagi|siang|sore|malam))?/i;
-    const oldHourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(pagi|siang|sore|malam))?/i;
+    const oldTimeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})?(?:\s*(pagi|siang|sore|malam|subuh))?/i;
+    const oldHourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(pagi|siang|sore|malam|subuh))?/i;
 
     const matchOldFull = oldPartLower.match(oldTimeRegex);
     const matchOldSimple = oldPartLower.match(oldHourSimpleRegex);
@@ -386,17 +428,11 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
     if (matchOldFull && matchOldFull[1]) {
       let h = parseInt(matchOldFull[1], 10);
       const period = matchOldFull[3];
-      if (period === 'siang' && h >= 1 && h < 12) h += 12;
-      if (period === 'sore' && h >= 1 && h < 12) h += 12;
-      if (period === 'malam' && h >= 1 && h < 12) h += 12;
-      targetOldHour = h;
+      targetOldHour = normalizeHour(h, period);
     } else if (matchOldSimple && matchOldSimple[1]) {
       let h = parseInt(matchOldSimple[1], 10);
       const period = matchOldSimple[2];
-      if (period === 'siang' && h >= 1 && h < 12) h += 12;
-      if (period === 'sore' && h >= 1 && h < 12) h += 12;
-      if (period === 'malam' && h >= 1 && h < 12) h += 12;
-      targetOldHour = h;
+      targetOldHour = normalizeHour(h, period);
     }
 
     const topicMatch = oldPart.match(/(?:tim|untuk|dengan|buat|topik)\s+([a-zA-Z0-9\s-_]+)/i);
@@ -420,27 +456,32 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
   if (newPartLower.includes('besok')) dayOffset = 1;
   else if (newPartLower.includes('lusa')) dayOffset = 2;
 
-  const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
-  const hourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/i;
+  const nowTz = getNowInTimezone(defaultTz);
 
-  const matchFull = newPartLower.match(timeRegex);
-  const matchSimple = newPartLower.match(hourSimpleRegex);
+  // Cek apakah meminta waktu "sekarang" / "sekarang saja" / "now" / "langsung"
+  const isNow = /(?:sekarang(?:\s+saja)?|now|langsung)/i.test(newPartLower);
 
-  if (matchFull) {
-    let hour = parseInt(matchFull[1], 10);
-    newMinute = parseInt(matchFull[2], 10);
-    const period = matchFull[3];
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    newHour = hour;
-  } else if (matchSimple) {
-    let hour = parseInt(matchSimple[1], 10);
-    const period = matchSimple[2];
-    if (period === 'siang' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'sore' && hour >= 1 && hour < 12) hour += 12;
-    if (period === 'malam' && hour >= 1 && hour < 12) hour += 12;
-    newHour = hour;
+  if (isNow) {
+    newHour = nowTz.hour;
+    newMinute = nowTz.minute;
+    dayOffset = 0;
+  } else {
+    const timeRegex = /(?:jam\s*)?(\d{1,2})[.:](\d{2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam|subuh))?/i;
+    const hourSimpleRegex = /jam\s*(\d{1,2})(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam|subuh))?/i;
+
+    const matchFull = newPartLower.match(timeRegex);
+    const matchSimple = newPartLower.match(hourSimpleRegex);
+
+    if (matchFull) {
+      let hour = parseInt(matchFull[1], 10);
+      newMinute = parseInt(matchFull[2], 10);
+      const period = matchFull[3];
+      newHour = normalizeHour(hour, period, { dayOffset, currentHour: nowTz.hour });
+    } else if (matchSimple) {
+      let hour = parseInt(matchSimple[1], 10);
+      const period = matchSimple[2];
+      newHour = normalizeHour(hour, period, { dayOffset, currentHour: nowTz.hour });
+    }
   }
 
   // 5. Cek apakah ada perubahan topik baru

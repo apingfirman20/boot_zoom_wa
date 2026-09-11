@@ -699,11 +699,17 @@ async function startBot() {
           } else if (cancelCmd.matchedHour !== null) {
             matchedMeeting = activeMeetings.find(m => {
               const d = new Date(m.startTime);
-              return d.getHours() === cancelCmd.matchedHour;
+              const h = d.getHours();
+              return h === cancelCmd.matchedHour ||
+                     (cancelCmd.matchedHour > 12 && h === cancelCmd.matchedHour - 12) ||
+                     (cancelCmd.matchedHour <= 12 && h === cancelCmd.matchedHour + 12);
             });
           } else if (cancelCmd.targetTopic) {
             const term = cancelCmd.targetTopic.toLowerCase();
-            matchedMeeting = activeMeetings.find(m => (m.topic || '').toLowerCase().includes(term));
+            matchedMeeting = activeMeetings.find(m => {
+              const top = (m.topic || '').toLowerCase();
+              return top.includes(term) || term.includes(top);
+            });
           } else if (activeMeetings.length === 1) {
             matchedMeeting = activeMeetings[0];
           }
@@ -757,12 +763,20 @@ async function startBot() {
           } else if (editCmd.targetOldHour !== null) {
             matchedMeeting = activeMeetings.find(m => {
               const d = new Date(m.startTime);
-              return d.getHours() === editCmd.targetOldHour;
+              const h = d.getHours();
+              return h === editCmd.targetOldHour ||
+                     (editCmd.targetOldHour > 12 && h === editCmd.targetOldHour - 12) ||
+                     (editCmd.targetOldHour <= 12 && h === editCmd.targetOldHour + 12);
             });
           } else if (editCmd.targetTopic) {
             const term = editCmd.targetTopic.toLowerCase();
-            matchedMeeting = activeMeetings.find(m => (m.topic || '').toLowerCase().includes(term));
-          } else if (activeMeetings.length === 1) {
+            matchedMeeting = activeMeetings.find(m => {
+              const top = (m.topic || '').toLowerCase();
+              return top.includes(term) || term.includes(top);
+            });
+          }
+          
+          if (!matchedMeeting && activeMeetings.length === 1) {
             matchedMeeting = activeMeetings[0];
           }
 
