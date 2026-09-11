@@ -27,14 +27,15 @@ export function getActiveMeetings() {
     const list = JSON.parse(raw);
     const now = Date.now();
 
-    // Simpan meeting aktif, meeting pending rekaman, dan meeting pending rekap peserta (hingga 12 jam)
+    // Simpan meeting aktif, meeting pending rekaman, pending rekap peserta, dan pending AI summary (hingga 12 jam)
     const active = list.filter(m => {
       const startTime = parseToDate(m.startTime).getTime();
       const endTime = startTime + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
       const isPendingRecording = m.autoRecord && !m.recordingSent;
       const isPendingSummary = !m.summarySent;
+      const isPendingAiSummary = !m.aiSummarySent;
 
-      if (isPendingRecording || isPendingSummary) {
+      if (isPendingRecording || isPendingSummary || isPendingAiSummary) {
         return endTime > (now - 12 * 3600 * 1000);
       }
       return endTime > (now - 4 * 3600 * 1000);
@@ -71,6 +72,7 @@ export function saveScheduledMeeting(meeting) {
       recordRequesterPhone: meeting.recordRequesterPhone || meeting.requesterPhone || '',
       recordingSent: false,
       summarySent: false,
+      aiSummarySent: false,
       createdAt: new Date().toISOString()
     });
     fs.writeFileSync(MEETINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
@@ -180,6 +182,22 @@ export function getMeetingsPendingSummary() {
     if (m.summarySent) return false;
     const start = parseToDate(m.startTime).getTime();
     return now >= (start + 5 * 60 * 1000);
+  });
+}
+
+/**
+ * Mengambil daftar meeting yang sudah selesai dan belum dikirimkan notula AI-nya.
+ * 
+ * @returns {Array<object>}
+ */
+export function getMeetingsPendingAiSummary() {
+  const meetings = getActiveMeetings();
+  const now = Date.now();
+
+  return meetings.filter(m => {
+    if (m.aiSummarySent) return false;
+    const start = parseToDate(m.startTime).getTime();
+    return now >= (start + 3 * 60 * 1000);
   });
 }
 

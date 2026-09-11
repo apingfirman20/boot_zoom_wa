@@ -23,7 +23,8 @@ import {
   startLiveMeetingRecording,
   getMeetingRecordings,
   getPastMeetingDetails,
-  getPastMeetingParticipants
+  getPastMeetingParticipants,
+  getZoomMeetingSummary
 } from './src/services/zoom.js';
 import {
   formatMeetingTime,
@@ -43,6 +44,7 @@ import {
   updateMeetingRecording,
   getMeetingsPendingRecording,
   getMeetingsPendingSummary,
+  getMeetingsPendingAiSummary,
   getScheduledMeetingById
 } from './src/services/schedule.js';
 
@@ -259,6 +261,14 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
     participantLines.push(`_Tidak ada peserta terdeteksi bergabung di ruang meeting._`);
   }
 
+  // Cek apakah ringkasan rapat dari Zoom AI Companion sudah siap
+  let aiSummary = null;
+  try {
+    aiSummary = await getZoomMeetingSummary(meeting.id);
+  } catch (aiErr) {
+    // Zoom AI mungkin masih memproses ringkasan
+  }
+
   const summaryMsg = [
     `📊 *LAPORAN KEHADIRAN ZOOM MEETING*`,
     ``,
@@ -270,16 +280,127 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null) {
     `━━━━━━━━━━━━━━━━━━━`,
     `*DAFTAR PESERTA YANG BERGABUNG:*`,
     ...participantLines,
-    `━━━━━━━━━━━━━━━━━━━`,
-    `_Laporan otomatis dibuat setelah meeting berakhir._`
-  ].join('\n');
+    `━━━━━━━━━━━━━━━━━━━`
+  ];
+
+  if (aiSummary && (aiSummary.summaryOverview || aiSummary.summaryDetails.length > 0 || aiSummary.nextSteps.length > 0)) {
+    summaryMsg.push(``);
+    summaryMsg.push(`🤖 *RINGKASAN & NOTULA RAPAT (ZOOM AI)*`);
+    if (aiSummary.summaryOverview) {
+      summaryMsg.push(``);
+      summaryMsg.push(`📖 *Rangkuman Pembahasan:*`);
+      summaryMsg.push(aiSummary.summaryOverview);
+    }
+    if (aiSummary.summaryDetails && aiSummary.summaryDetails.length > 0) {
+      summaryMsg.push(``);
+      summaryMsg.push(`🔍 *Poin-Poin Penting:*`);
+      aiSummary.summaryDetails.forEach(d => {
+        if (d.label) summaryMsg.push(`• *${d.label}:* ${d.summary}`);
+        else summaryMsg.push(`• ${d.summary}`);
+      });
+    }
+    if (aiSummary.nextSteps && aiSummary.nextSteps.length > 0) {
+      summaryMsg.push(``);
+      summaryMsg.push(`✅ *Tindak Lanjut / Action Items:*`);
+      aiSummary.nextSteps.forEach((s, idx) => {
+        summaryMsg.push(`${idx + 1}. ${s}`);
+      });
+    }
+    summaryMsg.push(``);
+    summaryMsg.push(`━━━━━━━━━━━━━━━━━━━`);
+    summaryMsg.push(`_Laporan kehadiran & notula otomatis disusun oleh Zoom AI._`);
+  } else {
+    summaryMsg.push(`_Laporan otomatis dibuat setelah meeting berakhir._`);
+  }
 
   try {
-    await globalSock.sendMessage(targetPhone, { text: summaryMsg });
+    await globalSock.sendMessage(targetPhone, { text: summaryMsg.join('\n') });
     console.log(`✅ Laporan rekap peserta meeting ID ${meeting.id} (${participants.length} peserta) berhasil dikirim ke ${targetPhone}!`);
-    updateMeetingRecording(meeting.id, { summarySent: true });
+    updateMeetingRecording(meeting.id, {
+      summarySent: true,
+      aiSummarySent: Boolean(aiSummary)
+    });
   } catch (sendErr) {
     console.error(`Gagal mengirim laporan rekap ke ${targetPhone}:`, sendErr.message);
+  }
+}
+
+/**
+ * Mengirimkan pesan ringkasan & notula rapat yang baru selesai disusun oleh Zoom AI Companion.
+ */
+async function sendAiSummaryNotification(meetingId, summaryObj = null) {
+  if (!globalSock) return;
+  const meeting = getScheduledMeetingById(meetingId);
+  const targetPhone = meeting?.requesterPhone || meeting?.recordRequesterPhone;
+  if (!targetPhone) return;
+
+  // Jika sudah dikirimkan, jangan kirim ulang agar tidak dobel
+  if (meeting?.aiSummarySent) return;
+
+  let aiSummary = null;
+  if (summaryObj && (summaryObj.summary_overview || summaryObj.summary_details || summaryObj.next_steps)) {
+    const nextSteps = Array.isArray(summaryObj.next_steps)
+      ? summaryObj.next_steps.map(s => typeof s === 'string' ? s : s.step).filter(Boolean)
+      : [];
+    const summaryDetails = Array.isArray(summaryObj.summary_details)
+      ? summaryObj.summary_details.map(d => ({ label: d.label || '', summary: d.summary || '' })).filter(d => d.summary)
+      : [];
+    aiSummary = {
+      summaryTitle: summaryObj.summary_title || '',
+      summaryOverview: summaryObj.summary_overview || '',
+      summaryDetails,
+      nextSteps
+    };
+  } else {
+    aiSummary = await getZoomMeetingSummary(meetingId);
+  }
+
+  if (!aiSummary || (!aiSummary.summaryOverview && aiSummary.summaryDetails.length === 0 && aiSummary.nextSteps.length === 0)) {
+    return;
+  }
+
+  const topic = meeting?.topic || aiSummary.summaryTitle || 'Zoom Meeting';
+  const lines = [
+    `🤖 *RINGKASAN & NOTULA RAPAT (ZOOM AI)*`,
+    ``,
+    `📌 *Topik:* ${topic}`,
+    `🆔 *Meeting ID:* ${meetingId}`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━`
+  ];
+
+  if (aiSummary.summaryOverview) {
+    lines.push(`📖 *Rangkuman Pembahasan:*`);
+    lines.push(aiSummary.summaryOverview);
+    lines.push(``);
+  }
+
+  if (aiSummary.summaryDetails.length > 0) {
+    lines.push(`🔍 *Poin-Poin Penting:*`);
+    aiSummary.summaryDetails.forEach(d => {
+      if (d.label) lines.push(`• *${d.label}:* ${d.summary}`);
+      else lines.push(`• ${d.summary}`);
+    });
+    lines.push(``);
+  }
+
+  if (aiSummary.nextSteps.length > 0) {
+    lines.push(`✅ *Tindak Lanjut / Action Items:*`);
+    aiSummary.nextSteps.forEach((s, idx) => {
+      lines.push(`${idx + 1}. ${s}`);
+    });
+    lines.push(``);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`_Notula otomatis disusun oleh Zoom AI Companion._`);
+
+  try {
+    await globalSock.sendMessage(targetPhone, { text: lines.join('\n') });
+    console.log(`✅ Notula AI meeting ${meetingId} berhasil dikirim ke ${targetPhone}!`);
+    updateMeetingRecording(meetingId, { aiSummarySent: true });
+  } catch (err) {
+    console.error(`Gagal mengirim notula AI ke ${targetPhone}:`, err.message);
   }
 }
 
@@ -294,7 +415,6 @@ async function pollPendingSummaries() {
   for (const m of pending) {
     try {
       const pastDetails = await getPastMeetingDetails(m.id);
-      // Jika data past meeting sudah memiliki end_time atau durasi, berarti meeting sudah selesai
       if (pastDetails && (pastDetails.endTime || pastDetails.duration > 0)) {
         console.log(`🏁 Mendeteksi meeting ${m.id} (${m.topic}) telah selesai di Zoom, memproses rekap...`);
         await sendMeetingEndedSummary(m.id, pastDetails);
@@ -305,9 +425,31 @@ async function pollPendingSummaries() {
   }
 }
 
-// Cek status rekap meeting yang selesai setiap 2 menit
+/**
+ * Pengecekan berkala (polling) untuk notula AI yang baru selesai diproses oleh server Zoom.
+ */
+async function pollPendingAiSummaries() {
+  if (!globalSock) return;
+  const pending = getMeetingsPendingAiSummary();
+  if (pending.length === 0) return;
+
+  for (const m of pending) {
+    try {
+      const summary = await getZoomMeetingSummary(m.id);
+      if (summary) {
+        console.log(`🤖 Mendeteksi notula AI untuk meeting ${m.id} (${m.topic}) telah siap, mengirimkan...`);
+        await sendAiSummaryNotification(m.id, summary);
+      }
+    } catch (err) {
+      // Ignored
+    }
+  }
+}
+
+// Cek status rekap & notula meeting yang selesai setiap 2 menit
 setInterval(() => {
   pollPendingSummaries().catch(() => {});
+  pollPendingAiSummaries().catch(() => {});
 }, 2 * 60 * 1000);
 
 
@@ -504,6 +646,18 @@ const server = http.createServer(async (req, res) => {
                 console.error(`Gagal memproses rekap webhook meeting ${obj.id}:`, err.message);
               });
             }, 8000);
+          }
+        }
+
+        // Event ringkasan notula Zoom AI selesai dibuat (Zoom AI Companion)
+        if (data.event === 'meeting.summary_completed') {
+          const obj = data.payload?.object;
+          const mId = obj?.id || obj?.meeting_id;
+          if (mId) {
+            console.log(`🤖 [Zoom Webhook] Notula AI selesai untuk meeting ID: ${mId}`);
+            sendAiSummaryNotification(mId, obj).catch(err => {
+              console.error(`Gagal memproses notula AI webhook meeting ${mId}:`, err.message);
+            });
           }
         }
 

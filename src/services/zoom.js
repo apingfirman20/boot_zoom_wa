@@ -517,5 +517,64 @@ export async function getPastMeetingParticipants(meetingId) {
   }
 }
 
+/**
+ * Mengambil ringkasan notula rapat dari Zoom AI Companion (Meeting Summary API).
+ * 
+ * @param {string|number} meetingId
+ * @returns {Promise<{
+ *   summaryTitle: string,
+ *   summaryOverview: string,
+ *   summaryDetails: Array<{ label: string, summary: string }>,
+ *   nextSteps: Array<string>
+ * }|null>}
+ */
+export async function getZoomMeetingSummary(meetingId) {
+  if (!meetingId) return null;
+  try {
+    const accessToken = await getZoomAccessToken();
+    const encodedId = encodeURIComponent(String(meetingId).trim());
+    const response = await fetch(`https://api.zoom.us/v2/meetings/${encodedId}/meeting_summary`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        cachedAccessToken = null;
+        tokenExpiresAt = 0;
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    if (!data || (!data.summary_overview && !data.summary_details && !data.next_steps)) {
+      return null;
+    }
+
+    const nextSteps = Array.isArray(data.next_steps)
+      ? data.next_steps.map(s => typeof s === 'string' ? s : s.step).filter(Boolean)
+      : [];
+
+    const summaryDetails = Array.isArray(data.summary_details)
+      ? data.summary_details.map(d => ({
+          label: d.label || '',
+          summary: d.summary || ''
+        })).filter(d => d.summary)
+      : [];
+
+    return {
+      summaryTitle: data.summary_title || '',
+      summaryOverview: data.summary_overview || '',
+      summaryDetails,
+      nextSteps
+    };
+  } catch (err) {
+    console.error(`Gagal mengambil summary Zoom AI untuk meeting ${meetingId}:`, err.message);
+    return null;
+  }
+}
+
 
 
