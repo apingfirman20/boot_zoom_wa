@@ -630,5 +630,58 @@ export async function getZoomMeetingSummary(meetingId) {
   }
 }
 
+/**
+ * Mengakhiri (end / stop) meeting yang sedang berlangsung di akun Zoom via REST API.
+ * Endpoint Zoom: PUT /meetings/{meetingId}/status dengan body { "action": "end" }
+ * 
+ * @param {string|number} meetingId
+ * @returns {Promise<boolean>}
+ */
+export async function endZoomMeeting(meetingId) {
+  if (!meetingId) throw new Error('Meeting ID diperlukan untuk mengakhiri meeting.');
+  const accessToken = await getZoomAccessToken();
+  const encodedId = encodeURIComponent(String(meetingId).trim());
 
+  const response = await fetch(`https://api.zoom.us/v2/meetings/${encodedId}/status`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ action: 'end' })
+  });
 
+  if (response.status === 204 || response.status === 200) {
+    return true;
+  }
+
+  const errorText = await response.text();
+  throw new Error(`Gagal mengakhiri meeting di Zoom (${response.status}): ${errorText}`);
+}
+
+/**
+ * Mengambil daftar meeting yang berstatus 'live' (sedang berlangsung) dari Zoom API.
+ * 
+ * @returns {Promise<Array<{ id: string, topic: string, startTime: string }>>}
+ */
+export async function getLiveZoomMeetings() {
+  try {
+    const accessToken = await getZoomAccessToken();
+    const res = await fetch('https://api.zoom.us/v2/users/me/meetings?type=live', {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data.meetings)) return [];
+
+    return data.meetings.map(m => ({
+      id: String(m.id),
+      topic: m.topic || 'Zoom Meeting',
+      startTime: m.start_time || ''
+    }));
+  } catch (err) {
+    console.error('Gagal mengambil daftar live meetings dari Zoom:', err.message);
+    return [];
+  }
+}

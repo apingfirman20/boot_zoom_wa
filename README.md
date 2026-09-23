@@ -70,6 +70,22 @@ BOT AI ZOOM/
 
 ---
 
+## 💬 Daftar Perintah WhatsApp yang Didukung
+
+| Perintah / Format Chat | Fungsi | Contoh |
+|---|---|---|
+| **Buat Meeting** | Membuat jadwal meeting baru di Zoom | `"buatkan zoom jam 2 siang dengan tim finance"` |
+| **Buat Meeting + Rekam** | Membuat jadwal meeting dengan Auto Recording | `"zoom jam 3 sore topik pitching rekam"` |
+| **Cek Jadwal** | Melihat semua jadwal meeting aktif | `"cek jadwal zoom"` atau `"!jadwal"` |
+| **Edit / Reschedule** | Mengubah jam atau topik meeting | `"ubah zoom jam 2 siang jadi jam 4 sore"` |
+| **Batalkan / Hapus** | Menghapus jadwal meeting dari Zoom | `"hapus zoom jam 2 siang"` atau `"!batal"` |
+| **Rekam Live Meeting** | Memulai cloud recording meeting yang sedang live | `"rekam"` atau `"rekam zoom sekarang"` |
+| **🛑 End Boy (Hentikan Meeting)** | **Menghentikan meeting yang sedang berlangsung secara otomatis** | **`"end boy"`** atau **`"end boy [Meeting ID]"`** / `"stop meeting"` |
+| **Rekap / Summary AI** | Mengambil data kehadiran peserta & notula rapat AI | `"rekap"` atau `"!summary [Meeting ID]"` |
+| **Bantuan / Menu** | Menampilkan panduan lengkap bot | `"!help"`, `"!menu"`, atau `"panduan"` |
+
+---
+
 ### Langkah 3: Scan QR Code di Koyeb Logs
 1. Setelah proses build selesai, buka tab **Logs** / **Console** di dashboard service Koyeb Anda.
 2. **Gambar QR Code akan langsung tercetak jelas di layar log Koyeb!**

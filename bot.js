@@ -15,7 +15,8 @@ import {
   parseLiveRecordCommand,
   parseEditCommand,
   parseHelpCommand,
-  parseSummaryCommand
+  parseSummaryCommand,
+  parseEndMeetingCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -26,7 +27,9 @@ import {
   getPastMeetingDetails,
   getPastMeetingParticipants,
   getZoomMeetingSummary,
-  getRecentEndedMeetings
+  getRecentEndedMeetings,
+  endZoomMeeting,
+  getLiveZoomMeetings
 } from './src/services/zoom.js';
 import {
   formatMeetingTime,
@@ -126,7 +129,13 @@ function formatHelpMessage(senderName = 'Kak/Pak/Bu') {
     `Jika meeting sudah berjalan dan ingin direkam ke Cloud:`,
     `• _"rekam"_ atau _"rekam zoom sekarang"_ atau _"!rekam"_`,
     ``,
-    `📊 *6. REKAP KEHADIRAN & NOTULA ZOOM AI*`,
+    `🛑 *6. MENGHENTIKAN MEETING (END BOY)*`,
+    `Untuk langsung menghentikan meeting yang sedang berlangsung:`,
+    `• _"end boy"_ *(otomatis menghentikan meeting live)*`,
+    `• _"end boy [Meeting ID]"_`,
+    `• _"stop meeting"_ atau _"akhiri zoom"_`,
+    ``,
+    `📊 *7. REKAP KEHADIRAN & NOTULA ZOOM AI*`,
     `Untuk melihat daftar peserta hadir dan notula AI rapat yang selesai:`,
     `• _"rekap"_ atau _"rekap meeting"_ *(otomatis ambil rapat yang baru selesai)*`,
     `• _"!rekap [Meeting ID]"_ atau _"!summary [Meeting ID]"_`,
@@ -616,7 +625,8 @@ function getDashboardHtml() {
         <b>💡 Contoh Perintah WhatsApp:</b><br>
         • "buatkan link zoom sekarang untuk rapat jangan lupa di rekam"<br>
         • "cek jadwal zoom"<br>
-        • "rekam" (ketika meeting berlangsung)
+        • "rekam" (ketika meeting berlangsung)<br>
+        • "end boy" (otomatis menghentikan meeting yang sedang berlangsung)
       </div>
     ` : isWaitingQr ? `
       <div class="badge badge-waiting">
@@ -1179,7 +1189,111 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // E. CEK PERINTAH REKAP KEHADIRAN & NOTULA ZOOM AI (!rekap, !summary, rekap meeting)
+      // E. CEK PERINTAH HENTIKAN MEETING (END BOY / END MEETING)
+      // -----------------------------------------------------------------------
+      const endCmd = parseEndMeetingCommand(cleanText);
+      if (endCmd) {
+        console.log(`\n🛑 [Perintah End Boy Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+
+          // 1. Cari meeting yang sedang live / berlangsung
+          let targetMeetingId = endCmd.meetingId;
+          let targetTopic = 'Zoom Meeting';
+
+          if (targetMeetingId) {
+            const scheduled = getScheduledMeetingById(targetMeetingId);
+            if (scheduled) targetTopic = scheduled.topic;
+          } else {
+            // Cek ke server Zoom apakah ada meeting live saat ini
+            try {
+              const liveZoomMeetings = await getLiveZoomMeetings();
+              if (liveZoomMeetings.length > 0) {
+                targetMeetingId = liveZoomMeetings[0].id;
+                targetTopic = liveZoomMeetings[0].topic;
+              }
+            } catch (liveErr) {
+              console.warn('Gagal cek live meetings via Zoom API:', liveErr.message);
+            }
+
+            // Fallback ke meeting live terjadwal di lokal
+            if (!targetMeetingId) {
+              const localLive = getCurrentLiveMeeting();
+              if (localLive) {
+                targetMeetingId = localLive.id;
+                targetTopic = localLive.topic;
+              } else {
+                // Cek jika hanya ada 1 meeting aktif di database
+                const active = getActiveMeetings();
+                if (active.length === 1) {
+                  targetMeetingId = active[0].id;
+                  targetTopic = active[0].topic;
+                }
+              }
+            }
+          }
+
+          if (!targetMeetingId) {
+            const noLiveMsg = `Mohon maaf Pak/Bu, saat ini tidak terdeteksi adanya meeting Zoom yang sedang aktif/berlangsung untuk dihentikan.\nKetik *cek jadwal zoom* untuk melihat daftar jadwal meeting.`;
+            await sock.sendMessage(remoteJid, { text: noLiveMsg }, { quoted: msg });
+            continue;
+          }
+
+          // 2. Kirim sinyal akhiri meeting ke Zoom API
+          console.log(`🛑 Menghentikan meeting ID ${targetMeetingId} (${targetTopic}) di Zoom...`);
+          try {
+            await endZoomMeeting(targetMeetingId);
+          } catch (endErr) {
+            console.error(`Gagal menghentikan meeting ${targetMeetingId} via Zoom API:`, endErr.message);
+            if (endErr.message.includes('404') || endErr.message.includes('3001')) {
+              await sock.sendMessage(remoteJid, {
+                text: `Meeting ID *${targetMeetingId}* sudah selesai atau tidak aktif lagi di Zoom.`
+              }, { quoted: msg });
+              continue;
+            }
+            throw endErr;
+          }
+
+          // Format waktu sekarang (WIB/sesuai timezone)
+          const nowStr = new Intl.DateTimeFormat('id-ID', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+            timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
+          }).format(new Date());
+
+          const replyEnd = [
+            `🛑 *Meeting Zoom Berhasil Dihentikan!*`,
+            ``,
+            `📌 *Topik:* ${targetTopic}`,
+            `🆔 *Meeting ID:* ${targetMeetingId}`,
+            `⏱️ *Waktu Selesai:* ${nowStr} WIB`,
+            ``,
+            `Meeting telah resmi diakhiri untuk semua peserta.`,
+            `📊 _Laporan rekap kehadiran & notula rapat sedang disiapkan dan akan otomatis dikirimkan sesaat lagi..._`
+          ].join('\n');
+
+          await sock.sendMessage(remoteJid, { text: replyEnd }, { quoted: msg });
+          console.log(`✅ Meeting ${targetMeetingId} berhasil dihentikan oleh ${senderName} (${remoteJid})`);
+
+          // Jadwalkan pengiriman laporan rekap kehadiran & notula 8 detik kemudian
+          setTimeout(() => {
+            sendMeetingEndedSummary(targetMeetingId, null, remoteJid).catch(err => {
+              console.error(`Gagal mengirimkan rekap pasca end boy meeting ${targetMeetingId}:`, err.message);
+            });
+          }, 8000);
+
+        } catch (endCmdErr) {
+          console.error('❌ Error saat memproses end boy:', endCmdErr);
+          await sock.sendMessage(remoteJid, {
+            text: `Maaf Pak/Bu, terjadi kendala saat menghentikan meeting di Zoom: ${endCmdErr.message}`
+          }, { quoted: msg });
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // F. CEK PERINTAH REKAP KEHADIRAN & NOTULA ZOOM AI (!rekap, !summary, rekap meeting)
       // -----------------------------------------------------------------------
       const summaryCmd = parseSummaryCommand(cleanText);
       if (summaryCmd) {

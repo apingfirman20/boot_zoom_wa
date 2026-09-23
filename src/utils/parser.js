@@ -70,13 +70,14 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, summary/rekap, atau info/panduan
+  // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, summary/rekap, hentikan meeting, atau info/panduan
   const isCancel = /(?:hapus|batal(?:kan)?|cancel|delete)/i.test(lower);
   const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+zoom|daftar\s+zoom|list\s+zoom|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
   const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
   const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
   const isSummary = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower) || /^(?:rekap|summary|notula|ringkasan)/i.test(lower);
-  if (isCancel || isList || isEdit || isHelp || isSummary) {
+  const isEnd = /(?:end\s+boy|(?:end|akhiri|stop|hentikan|selesaikan|tutup)\s+(?:meeting|zoom|miting))/i.test(lower);
+  if (isCancel || isList || isEdit || isHelp || isSummary || isEnd) {
     return null;
   }
 
@@ -576,7 +577,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
   // 2. Jika bot di-tag/di-mention di grup
   if (isGroup && isBotMentioned) {
     // Periksa apakah pesan mengandung aksi spesifik
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan)/i.test(lower);
     if (!hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'group_mention' };
     }
@@ -588,7 +589,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
                        /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
                        /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan)/i.test(lower);
 
     if (isGreeting && !hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'private_greeting' };
@@ -632,4 +633,40 @@ export function parseSummaryCommand(messageText) {
   };
 }
 
+/**
+ * Parsing perintah untuk mengakhiri / menghentikan meeting Zoom yang sedang berlangsung.
+ * Contoh perintah:
+ * - "end boy" (sesuai permintaan user)
+ * - "end boy!", "end boy ya", "end boy dong", "end boy sekarang", "tolong end boy", "!end boy", "/end boy"
+ * - "end boy 82242480038" (dengan meeting id spesifik)
+ * - Alias: "end meeting", "akhiri meeting", "stop meeting", "hentikan meeting", "stop zoom", "!end"
+ * 
+ * @param {string} messageText
+ * @returns {{ isEndMeetingCommand: boolean, meetingId: string|null }|null}
+ */
+export function parseEndMeetingCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
 
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  // 1. Cek pola utama "end boy" (bisa diawali/diakhiri kata sopan/tanda baca)
+  const isEndBoy = /(?:^|\b)(?:tolong\s+)?(?:[!/#])?end\s+boy\b/i.test(lower);
+
+  // 2. Cek alias natural penutup meeting
+  const isAliasEnd = /(?:^|\b)(?:[!/#])?(?:end\s+(?:meeting|zoom|miting)|akhiri\s+(?:meeting|zoom|miting|rapat)|stop\s+(?:meeting|zoom|miting)|hentikan\s+(?:meeting|zoom|miting)|selesaikan\s+(?:meeting|zoom|miting)|tutup\s+(?:meeting|zoom|miting))\b/i.test(lower) ||
+                     /^[!/#](?:end|stop|akhiri|selesai)\b/i.test(lower);
+
+  if (!isEndBoy && !isAliasEnd) {
+    return null;
+  }
+
+  // Cari apakah ada nomor ID Meeting tertentu (9-11 digit angka)
+  const idMatch = text.match(/\b(\d{9,11})\b/);
+  const meetingId = idMatch ? idMatch[1] : null;
+
+  return {
+    isEndMeetingCommand: true,
+    meetingId
+  };
+}
