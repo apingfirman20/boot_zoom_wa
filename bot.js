@@ -1375,15 +1375,17 @@ async function startBot() {
         // Beri tanda centang biru (read)
         await sock.readMessages([msg.key]);
 
-        // 2. CEK JADWAL BENTROK (Jam yang sama / Overlap)
-        // Otomatis memvalidasi ke Zoom jika meeting ternyata sudah dihapus di Zoom oleh user
-        const { hasConflict, conflictingMeeting } = await checkScheduleConflict(command.startTime, command.durationMinutes);
-        if (hasConflict && conflictingMeeting) {
-          const confTime = formatMeetingTime(conflictingMeeting.startTime);
-          const replyConflict = `Mohon maaf Pak/Bu, di jam segitu (${confTime}) ada tim ${conflictingMeeting.topic} yang sedang meeting. Mohon ditunggu ya atau jadwalkan di jam lain, agar meeting tidak double.`;
-          await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
-          console.log(`⚠️ Ditolak: Jadwal bentrok dengan tim ${conflictingMeeting.topic} (${confTime})`);
-          continue;
+        // 2. CEK JADWAL BENTROK (Hanya untuk Zoom, karena 1 akun host Zoom tidak bisa double meeting)
+        if (command.platform === 'ZOOM') {
+          const { hasConflict, conflictingMeeting } = await checkScheduleConflict(command.startTime, command.durationMinutes, null, 'ZOOM');
+          if (hasConflict && conflictingMeeting) {
+            const confTime = formatMeetingTime(conflictingMeeting.startTime);
+            const replyConflict = `Mohon maaf Pak/Bu, di jam segitu (${confTime}) akun Zoom sedang dipakai oleh tim *${conflictingMeeting.topic}*.\n\n` +
+              `💡 _Solusi: Anda bisa membuat Google Meet (ketik: "buatkan gmeet jam 10") atau jadwalkan Zoom di jam lain agar tidak bentrok._`;
+            await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
+            console.log(`⚠️ Ditolak: Jadwal Zoom bentrok dengan tim ${conflictingMeeting.topic} (${confTime})`);
+            continue;
+          }
         }
 
         // 3. Buat Meeting di Google Meet atau Zoom

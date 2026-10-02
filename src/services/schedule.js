@@ -308,9 +308,21 @@ export async function syncMeetingsWithZoom() {
  * @param {string|Date} startTimeISO 
  * @param {number} durationMinutes 
  * @param {string|number|null} [excludeMeetingId=null] ID meeting yang dikecualikan (misal saat edit)
+ * @param {'ZOOM'|'GMEET'} [targetPlatform='ZOOM'] Platform meeting yang akan dibuat
  * @returns {Promise<{ hasConflict: boolean, conflictingMeeting: object|null }>}
  */
-export async function checkScheduleConflict(startTimeISO, durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60, excludeMeetingId = null) {
+export async function checkScheduleConflict(
+  startTimeISO,
+  durationMinutes = Number(process.env.DEFAULT_MEETING_DURATION) || 60,
+  excludeMeetingId = null,
+  targetPlatform = 'ZOOM'
+) {
+  // Google Meet tidak memiliki batasan 1 host akun seperti Zoom,
+  // sehingga Google Meet tidak dibentrokkan dengan Zoom ataupun sesama Google Meet.
+  if (targetPlatform === 'GMEET') {
+    return { hasConflict: false, conflictingMeeting: null };
+  }
+
   const targetStart = parseToDate(startTimeISO).getTime();
   if (isNaN(targetStart)) return { hasConflict: false, conflictingMeeting: null };
 
@@ -320,6 +332,12 @@ export async function checkScheduleConflict(startTimeISO, durationMinutes = Numb
   for (const m of meetings) {
     // Lewati jika ini adalah meeting yang sedang di-edit (tidak membenturkan dengan dirinya sendiri)
     if (excludeMeetingId && String(m.id).trim() === String(excludeMeetingId).trim()) {
+      continue;
+    }
+
+    // Hanya bentrok jika meeting yang sudah ada adalah ZOOM (karena Zoom 1 akun host tidak bisa dipakai bersamaan)
+    // Meeting Google Meet tidak akan membenturkan jadwal Zoom
+    if (m.platform === 'GMEET') {
       continue;
     }
 
