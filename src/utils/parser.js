@@ -72,38 +72,38 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
 
   // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, summary/rekap, hentikan meeting, atau info/panduan
   const isCancel = /(?:hapus|batal(?:kan)?|cancel|delete)/i.test(lower);
-  const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+zoom|daftar\s+zoom|list\s+zoom|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
-  const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
+  const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+(?:zoom|gmeet|meet)|daftar\s+(?:zoom|gmeet|meet)|list\s+(?:zoom|gmeet|meet)|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
+  const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|gmeet|meet|google\s+meet|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
   const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
   const isSummary = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower) || /^(?:rekap|summary|notula|ringkasan)/i.test(lower);
-  const isEnd = /(?:end\s+boy|(?:end|akhiri|stop|hentikan|selesaikan|tutup)\s+(?:meeting|zoom|miting))/i.test(lower);
+  const isEnd = /(?:end\s+boy|(?:end|akhiri|stop|hentikan|selesaikan|tutup)\s+(?:meeting|zoom|gmeet|meet|miting))/i.test(lower);
   if (isCancel || isList || isEdit || isHelp || isSummary || isEnd) {
     return null;
   }
 
   // 2. Abaikan negasi eksplisit (misal: "jangan buat zoom", "bukan zoom", "gak usah zoom", "nggak usah buat zoom")
-  const isNegation = /(?:jangan|bukan|gak\s*usah|nggak\s*usah|tidak\s*usah|gak\s*perlu|nggak\s*perlu)\s+(?:(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan)?)\s+)?(?:link\s+)?(?:zoom|meeting|miting)/i.test(lower);
+  const isNegation = /(?:jangan|bukan|gak\s*usah|nggak\s*usah|tidak\s*usah|gak\s*perlu|nggak\s*perlu)\s+(?:(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan)?)\s+)?(?:link\s+)?(?:zoom|gmeet|google\s+meet|meet|meeting|miting)/i.test(lower);
   if (isNegation) {
     return null;
   }
 
   // 3. Deteksi apakah ini hanya obrolan biasa yang menyebut kata zoom / aplikasi zoom (BUKAN perintah membuat)
-  const isCasualChatAboutZoom = /(?:^|\s)(?:di|pada|dalam)\s+zoom(?:nya)?(?:\s|$)/i.test(lower) ||
-                                /(?:zoom(?:nya)?\s+(?:error|rusak|lemot|bermasalah|ngefreeze|lag|putus|aman|bagus|bisa|gabisa|gak\s+bisa))/i.test(lower) ||
-                                /(?:lagi|sedang)\s+(?:buka|masuk|ikut|ada\s+di)\s+zoom/i.test(lower) ||
-                                /(?:buka|tutup|update|install|download)\s+zoom/i.test(lower) ||
-                                /(?:zoom\s+(?:siapa|apa|kenapa|kok|mana))/i.test(lower);
+  const isCasualChatAboutZoom = /(?:^|\s)(?:di|pada|dalam)\s+(?:zoom|gmeet|meet)(?:nya)?(?:\s|$)/i.test(lower) ||
+                                /(?:(?:zoom|gmeet|meet)(?:nya)?\s+(?:error|rusak|lemot|bermasalah|ngefreeze|lag|putus|aman|bagus|bisa|gabisa|gak\s+bisa))/i.test(lower) ||
+                                /(?:lagi|sedang)\s+(?:buka|masuk|ikut|ada\s+di)\s+(?:zoom|gmeet|meet)/i.test(lower) ||
+                                /(?:buka|tutup|update|install|download)\s+(?:zoom|gmeet|meet)/i.test(lower) ||
+                                /(?:(?:zoom|gmeet)\s+(?:siapa|apa|kenapa|kok|mana))/i.test(lower);
 
-  // 4. Periksa apakah ada INTENSI EKSPLISIT untuk membuat meeting / meminta link zoom:
-  const isCommandPrefix = /^[!/](?:meeting|zoom)/i.test(lower);
+  // 4. Periksa apakah ada INTENSI EKSPLISIT untuk membuat meeting / meminta link zoom atau google meet:
+  const isCommandPrefix = /^[!/](?:meeting|zoom|gmeet|meet)/i.test(lower);
 
   // Kata kerja permintaan pembuatan meeting:
-  const hasActionVerb = /(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan|in)?|tolong(?:\s+buat(?:kan)?|\s+bikin|\s+link)?|order|pesan|booking|create|generate|setup|siapkan)\s+(?:link\s+)?(?:zoom|meeting|miting)/i.test(lower) ||
-                        /(?:ada\s+)?(?:link\s+)(?:zoom|meeting|miting)\s+(?:untuk|buat|jam|besok|sekarang|dong|ya|gak|kah)/i.test(lower) ||
-                        /^(?:minta\s+)?link\s+(?:zoom|meeting|miting)(?:\s+(?:dong|ya|kak|pak|bu|min|bang))?$/i.test(lower);
+  const hasActionVerb = /(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan|in)?|tolong(?:\s+buat(?:kan)?|\s+bikin|\s+link)?|order|pesan|booking|create|generate|setup|siapkan)\s+(?:link\s+)?(?:zoom|gmeet|google\s+meet|meet|meeting|miting)/i.test(lower) ||
+                        /(?:ada\s+)?(?:link\s+)(?:zoom|gmeet|google\s+meet|meet|meeting|miting)\s+(?:untuk|buat|jam|besok|sekarang|dong|ya|gak|kah)/i.test(lower) ||
+                        /^(?:minta\s+)?link\s+(?:zoom|gmeet|google\s+meet|meet|meeting|miting)(?:\s+(?:dong|ya|kak|pak|bu|min|bang))?$/i.test(lower);
 
-  // Kata "zoom" atau "meeting" yang diikuti penunjuk waktu spesifik
-  const hasZoomWithTime = /(?:zoom|meeting|miting)\s+(?:hari\s+ini\s+|besok\s+|lusa\s+)?(?:jam\s*\d{1,2}|nanti\s+jam|\d{1,2}[.:]\d{2})/i.test(lower);
+  // Kata "zoom", "gmeet", "meet" yang diikuti penunjuk waktu spesifik
+  const hasZoomWithTime = /(?:zoom|gmeet|google\s+meet|meet|meeting|miting)\s+(?:hari\s+ini\s+|besok\s+|lusa\s+)?(?:jam\s*\d{1,2}|nanti\s+jam|\d{1,2}[.:]\d{2})/i.test(lower);
 
   // Jika tidak memenuhi satu pun kriteria intensi membuat meeting:
   if (!isCommandPrefix && !hasActionVerb && !hasZoomWithTime) {
@@ -114,6 +114,10 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   if (isCasualChatAboutZoom && !hasActionVerb && !isCommandPrefix) {
     return null;
   }
+
+  // Deteksi Platform Target: GMEET vs ZOOM
+  const isGMeet = /(?:google\s+meet|gmeet|g-meet|\bmeet\b)/i.test(lower) && !lower.includes('zoom');
+  const platform = isGMeet ? 'GMEET' : 'ZOOM';
 
   // 5. Ekstraksi Waktu (Jam, Menit, Hari)
   const nowTz = getNowInTimezone(defaultTz);
@@ -179,10 +183,10 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const startTimeISO = `${yStr}-${mStr}-${dStr}T${hhStr}:${mmStr}:00${offset}`;
 
   // 6. Ekstraksi Topik / Judul / Nama Tim
-  let topic = 'Meeting Zoom';
+  let topic = platform === 'GMEET' ? 'Google Meet' : 'Meeting Zoom';
   const fillerWords = [
     'dong', 'ya', 'yah', 'kak', 'bang', 'mas', 'mbak', 'min', 'bro', 'sis', 'pls', 'please',
-    'tolong', 'minta', 'buatkan', 'bikin', 'link', 'zoom', 'meeting', 'miting',
+    'tolong', 'minta', 'buatkan', 'bikin', 'link', 'zoom', 'gmeet', 'google', 'meet', 'meeting', 'miting',
     'rekam', 'direkam', 'record', 'recording', 'nanti', 'sekalian', 'jangan', 'lupa', 'di', 'juga',
     'wib', 'wita', 'wit'
   ];
@@ -190,7 +194,7 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const recordCleanerRegex = /(?:jangan\s+lupa\s+)?(?:tolong\s+|nanti\s+|sekalian\s+|sambil\s+|mohon\s+)?(?:di\s*)?rekam(?:\s+ya)?|(?:auto\s*)?record(?:ing)?/gi;
 
   // Pola A: dengan/sama/buat/untuk/bahas/tentang/judul/topik [tim / topik]
-  const topicPrefixRegex = /(?:dengan|sama|buat|untuk|bahas|tentang|judul|topik)\s+(?:tim\s+)?([a-zA-Z0-9\s-_]+)/i;
+  const topicPrefixRegex = /(?:dengan|sama|buat|untuk|bahas|tentang|judul|topik)\s+([a-zA-Z0-9\s-_]+)/i;
   const matchPrefix = text.match(topicPrefixRegex);
 
   if (matchPrefix && matchPrefix[1]) {
@@ -208,10 +212,10 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   }
 
   // Jika pola A belum mendapatkan topik, bersihkan kata perintah umum
-  if (topic === 'Meeting Zoom') {
+  if (topic === 'Meeting Zoom' || topic === 'Google Meet') {
     let cleaned = text
-      .replace(/^[!/](?:meeting|zoom)\s*/i, '')
-      .replace(/buatkan|bikin|tolong|minta|buat|link|zoom|meeting|miting|jadwal(?:kan)?/gi, '')
+      .replace(/^[!/](?:meeting|zoom|gmeet|meet)\s*/i, '')
+      .replace(/buatkan|bikin|tolong|minta|buat|link|zoom|gmeet|google|meet|meeting|miting|jadwal(?:kan)?/gi, '')
       .replace(/sekarang|besok|lusa|juga/gi, '')
       .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(?:pagi|siang|sore|malam))?/gi, '')
       .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(?:pagi|siang|sore|malam))?/gi, '')
@@ -242,14 +246,17 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
 
   // 8. Ekstraksi Permintaan Rekam Otomatis (Cloud Recording)
   // Menangkap 'di rekam', 'direkam', 'rekam', 'record', 'jangan lupa di rekam', dll.
+  // Untuk Google Meet Pro, default autoRecord dan autoSummary otomatis aktif
   const autoRecord = /(?:jangan\s+lupa\s+)?(?:di\s*)?rekam|record(?:ing)?|auto\s*record/i.test(lower);
 
   return {
     isMeetingCommand: true,
+    platform: platform,
     topic: topic,
     startTime: startTimeISO,
     durationMinutes: durationMinutes,
-    autoRecord: autoRecord
+    autoRecord: autoRecord || platform === 'GMEET',
+    autoSummary: platform === 'GMEET'
   };
 }
 

@@ -59,4 +59,25 @@ assert(typeof endZoomMeeting === 'function', 'endZoomMeeting harus berupa functi
 assert(typeof getLiveZoomMeetings === 'function', 'getLiveZoomMeetings harus berupa function');
 console.log('✅ Test 11: endZoomMeeting dan getLiveZoomMeetings terdefinisi sebagai function');
 
-console.log('\n🎉 Semua pengujian fitur "end boy" BERHASIL 100%!\n');
+console.log('\n🧪 Memulai Pengujian Fitur Google Meet (GMeet)...');
+
+// Test 12: Permintaan pembuatan Google Meet TIM SOTS
+const t12 = parseMeetingCommand('buatkan google meet jam 10 untuk TIM SOTS');
+assert(t12 && t12.isMeetingCommand, 'Test 12 gagal: harus terdeteksi sebagai meeting command');
+assert(t12.platform === 'GMEET', 'Test 12 gagal: platform harus GMEET');
+assert(t12.topic.toLowerCase().includes('sots'), 'Test 12 gagal: topik harus mengandung sots');
+assert(t12.autoRecord === true, 'Test 12 gagal: autoRecord harus true');
+assert(t12.autoSummary === true, 'Test 12 gagal: autoSummary harus true');
+console.log('✅ Test 12: "buatkan google meet jam 10 untuk TIM SOTS" -> Platform GMEET, AutoRecord: true, AutoSummary: true');
+
+// Test 13: Permintaan gmeet singkat
+const t13 = parseMeetingCommand('gmeet besok jam 2 siang topik evaluasi');
+assert(t13 && t13.platform === 'GMEET', 'Test 13 gagal: gmeet harus terdeteksi');
+console.log('✅ Test 13: "gmeet besok jam 2 siang" -> Platform GMEET');
+
+// Test 14: Permintaan zoom tetap platform ZOOM
+const t14 = parseMeetingCommand('buatkan zoom jam 3 sore tim finance');
+assert(t14 && t14.platform === 'ZOOM', 'Test 14 gagal: zoom harus terdeteksi sebagai ZOOM');
+console.log('✅ Test 14: "buatkan zoom jam 3 sore" -> Platform ZOOM');
+
+console.log('\n🎉 Semua pengujian (Zoom + Google Meet) BERHASIL 100%!\n');

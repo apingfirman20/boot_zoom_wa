@@ -32,6 +32,10 @@ import {
   getLiveZoomMeetings
 } from './src/services/zoom.js';
 import {
+  createGoogleMeeting,
+  isGoogleConfigured
+} from './src/services/gmeet.js';
+import {
   formatMeetingTime,
   formatMeetingRange,
   formatDurationHuman,
@@ -95,19 +99,26 @@ console.error = function (...args) {
  */
 function formatHelpMessage(senderName = 'Kak/Pak/Bu') {
   return [
-    `👋 Halo *${senderName}*! Saya adalah *Bot Asisten Zoom Meeting*.`,
+    `👋 Halo *${senderName}*! Saya adalah *Bot Asisten Zoom & Google Meet*.`,
     `Berikut panduan lengkap cara menggunakan bot ini:`,
     ``,
-    `➕ *1. CARA MEMBUAT / ADD JADWAL ZOOM*`,
+    `➕ *1. CARA MEMBUAT JADWAL ZOOM & GOOGLE MEET*`,
     `Cukup ketik permintaan dengan menyebutkan jam dan topik secara natural:`,
+    `• _"buatkan google meet jam 10 untuk TIM SOTS"_ *(Auto-Record & Rangkuman)*`,
+    `• _"buat gmeet besok jam 2 siang topik evaluasi mingguan"_`,
+    `• _"minta link meet sekarang untuk rapat direksi"_`,
     `• _"buatkan zoom jam 2 siang dengan tim finance"_`,
     `• _"zoom besok jam 10 pagi topik review bulanan"_`,
-    `• _"minta link zoom sekarang untuk rapat direksi"_`,
     `• _"buat zoom jam 3 sore topik pitching klien rekam"_ *(Auto Recording Cloud)*`,
     ``,
-    `📅 *2. CARA CEK JADWAL ZOOM*`,
+    `✨ *Fitur Google Meet Pro:*`,
+    `• 🚪 *Langsung Masuk:* Peserta tidak perlu menunggu di-ACC host (tanpa knocking).`,
+    `• ⏱️ *Langsung Mulai:* Begitu ada peserta yang mengeklik link, room langsung aktif.`,
+    `• 📹 *Auto Recording & Rangkuman:* Otomatis merekam & catatan rapat dirangkum oleh Gemini.`,
+    ``,
+    `📅 *2. CARA CEK JADWAL MEETING*`,
     `Untuk melihat semua jadwal meeting yang aktif / terjadwal:`,
-    `• _"cek jadwal zoom"_`,
+    `• _"cek jadwal zoom"_ atau _"cek jadwal meeting"_`,
     `• _"lihat jadwal"_`,
     `• _"!jadwal"_ atau _"!list"_`,
     ``,
@@ -1375,6 +1386,76 @@ async function startBot() {
           continue;
         }
 
+        // 3. Buat Meeting di Google Meet atau Zoom
+        if (command.platform === 'GMEET') {
+          console.log('📞 Menghubungi Google Meet API...');
+          try {
+            const meeting = await createGoogleMeeting({
+              topic: command.topic,
+              startTime: command.startTime,
+              duration: command.durationMinutes,
+              autoRecord: command.autoRecord,
+              autoSummary: command.autoSummary
+            });
+
+            // Simpan meeting ke database jadwal lokal agar terdeteksi bentrok
+            saveScheduledMeeting({
+              meetingId: meeting.meetingCode || meeting.spaceName,
+              platform: 'GMEET',
+              topic: command.topic,
+              startTime: command.startTime,
+              duration: command.durationMinutes,
+              joinUrl: meeting.joinUrl,
+              passcode: '',
+              autoRecord: meeting.autoRecord,
+              requesterPhone: remoteJid,
+              recordRequesterPhone: remoteJid
+            });
+
+            const formattedTime = formatMeetingTime(command.startTime);
+
+            // Format balasan WhatsApp sesuai kebutuhan user
+            const replySuccess = [
+              `Berikut Pak/Bu untuk Link Google Meet`,
+              `📌 *Topik:* ${meeting.topic}`,
+              `🗓️ *Waktu:* ${formattedTime}`,
+              `🔗 *Link Google Meet:*`,
+              `${meeting.joinUrl}`,
+              `🆔 *Meeting Code:* ${meeting.meetingCode}`,
+              `🚪 *Akses Masuk:* Langsung Masuk (Tanpa ACC Host / Tanpa Menunggu)`,
+              meeting.autoRecord ? `📹 *Auto Recording:* Aktif (Otomatis merekam saat meeting berjalan)` : null,
+              meeting.autoSummary ? `📝 *Smart Notes / Rangkuman:* Aktif (Notula otomatis dibuat oleh Gemini)` : null,
+              ``,
+              `Peserta dapat langsung mengeklik link di atas untuk langsung bergabung dan memulai meeting.`
+            ].filter(Boolean).join('\n');
+
+            await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
+            console.log(`✅ Link Google Meet berhasil dikirim ke ${remoteJid}!`);
+
+            // 4. CEK APAKAH ADA MEETING BERIKUTNYA YANG BERJARAK 1-2 JAM
+            const nearbyMeeting = await getNearbyUpcomingMeeting(command.startTime, command.durationMinutes);
+            if (nearbyMeeting) {
+              const nearbyDate = new Date(nearbyMeeting.startTime);
+              const nearbyHour = new Intl.DateTimeFormat('id-ID', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+                timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
+              }).format(nearbyDate);
+
+              const followUpText = `Untuk di jam ${nearbyHour} akan ada meeting tim ${nearbyMeeting.topic}, mohon dikondisikan ya.`;
+              await sock.sendMessage(remoteJid, { text: followUpText });
+              console.log(`📢 Keterangan lanjutan jadwal terdekat berhasil dikirim: "${followUpText}"`);
+            }
+          } catch (gmeetErr) {
+            console.error('❌ Gagal membuat Google Meet:', gmeetErr.message);
+            const errReply = `Maaf ${senderName}, terjadi kendala saat membuat Google Meet: ${gmeetErr.message}\n\n` +
+              `_💡 Tips: Pastikan akun Google sudah dihubungkan dengan menjalankan setup-google.bat di server bot._`;
+            await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
+          }
+          continue;
+        }
+
         // 3. Buat Meeting di Zoom via REST API
         console.log('📞 Menghubungi Zoom API...');
         try {
@@ -1388,6 +1469,7 @@ async function startBot() {
           // Simpan meeting ke database jadwal lokal agar dapat mendeteksi bentrok selanjutnya
           saveScheduledMeeting({
             meetingId: meeting.meetingId,
+            platform: 'ZOOM',
             topic: command.topic,
             startTime: command.startTime,
             duration: command.durationMinutes,

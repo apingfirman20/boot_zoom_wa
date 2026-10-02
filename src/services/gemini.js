@@ -35,7 +35,7 @@ export async function extractMeetingDetails(userMessage, senderName = '') {
   const timeContext = getCurrentTimeContext();
 
   const systemInstruction = `
-Kamu adalah asisten cerdas WhatsApp yang bertugas mendeteksi apakah pengguna ingin menjadwalkan/membuat pertemuan video (Zoom Meeting).
+Kamu adalah asisten cerdas WhatsApp yang bertugas mendeteksi apakah pengguna ingin menjadwalkan/membuat pertemuan video (Zoom Meeting atau Google Meet).
 Waktu lokal saat ini: ${timeContext.localString}
 Timezone: ${timeContext.timezone}
 ISO Waktu Saat Ini: ${timeContext.isoString}
@@ -43,7 +43,8 @@ ISO Waktu Saat Ini: ${timeContext.isoString}
 Panduan Ekstraksi:
 1. Jika pengguna ingin membuat/menjadwalkan meeting:
    - Set "intent" = "CREATE_MEETING".
-   - Ekstrak "topic": Judul/agenda meeting (contoh: "Diskusi Proyek Web", "Meeting Koordinasi", default: "Meeting").
+   - Ekstrak "platform": Tentukan apakah pengguna meminta "GMEET" (jika menyebut gmeet, google meet, meet) atau "ZOOM" (jika menyebut zoom atau meeting umum). Nilai: "ZOOM" atau "GMEET".
+   - Ekstrak "topic": Judul/agenda meeting (contoh: "Diskusi Proyek Web", "TIM SOTS", default: "Meeting").
    - Ekstrak "startTime": Hitung tanggal dan jam berdasarkan kata-kata relatif seperti "nanti jam 4 sore", "besok jam 10 pagi", "lusa", "hari Senin jam 14:00". Konversikan ke format ISO 8601 lengkap dengan offset timezone (contoh: "2026-09-08T14:00:00+07:00") atau UTC Z.
    - Jika pengguna meminta meeting tapi TIDAK menyebutkan jam/hari sama sekali:
      - Set "needsMoreInfo" = true.
@@ -53,7 +54,7 @@ Panduan Ekstraksi:
 2. Jika pengguna HANYA menyapa, bertanya hal umum, atau tidak ada niat membuat meeting:
    - Set "intent" = "OTHER".
    - Set "needsMoreInfo" = false.
-   - Tuliskan "replyMessage" yang ramah, memperkenalkan diri sebagai bot pembuat link Zoom otomatis, dan memberi tahu cara menggunakannya (contoh: "Ketik 'Tolong buatkan meeting besok jam 2 siang'").
+   - Tuliskan "replyMessage" yang ramah, memperkenalkan diri sebagai bot pembuat link Zoom & Google Meet otomatis, dan memberi tahu cara menggunakannya (contoh: "Ketik 'Tolong buatkan google meet jam 10 untuk TIM SOTS'").
 `.trim();
 
   try {
@@ -70,6 +71,11 @@ Panduan Ekstraksi:
               type: Type.STRING,
               enum: ['CREATE_MEETING', 'OTHER'],
               description: 'Niat pengguna apakah ingin membuat meeting atau hal lain'
+            },
+            platform: {
+              type: Type.STRING,
+              enum: ['ZOOM', 'GMEET'],
+              description: 'Platform meeting: ZOOM atau GMEET'
             },
             topic: {
               type: Type.STRING,
@@ -92,7 +98,7 @@ Panduan Ekstraksi:
               description: 'Pesan balasan ke pengguna WhatsApp'
             }
           },
-          required: ['intent', 'topic', 'durationMinutes', 'needsMoreInfo', 'replyMessage']
+          required: ['intent', 'platform', 'topic', 'durationMinutes', 'needsMoreInfo', 'replyMessage']
         }
       }
     });
@@ -102,11 +108,12 @@ Panduan Ekstraksi:
 
     return {
       intent: parsed.intent || 'OTHER',
-      topic: parsed.topic || 'Zoom Meeting',
+      platform: parsed.platform || 'ZOOM',
+      topic: parsed.topic || (parsed.platform === 'GMEET' ? 'Google Meet' : 'Zoom Meeting'),
       startTime: parsed.startTime || null,
       durationMinutes: parsed.durationMinutes || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
       needsMoreInfo: Boolean(parsed.needsMoreInfo),
-      replyMessage: parsed.replyMessage || 'Halo! Saya bot pembuat link Zoom otomatis.'
+      replyMessage: parsed.replyMessage || 'Halo! Saya bot pembuat link Zoom & Google Meet otomatis.'
     };
   } catch (error) {
     console.error('Error saat memanggil Gemini API:', error);

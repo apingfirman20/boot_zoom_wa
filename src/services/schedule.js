@@ -62,11 +62,12 @@ export function saveScheduledMeeting(meeting) {
     const list = getActiveMeetings();
     list.push({
       id: meeting.meetingId || meeting.id,
+      platform: meeting.platform || 'ZOOM',
       topic: meeting.topic,
       startTime: meeting.startTime,
       duration: Number(meeting.duration) || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
       joinUrl: meeting.joinUrl,
-      passcode: meeting.passcode,
+      passcode: meeting.passcode || '',
       autoRecord: Boolean(meeting.autoRecord),
       requesterPhone: meeting.requesterPhone || '',
       recordRequesterPhone: meeting.recordRequesterPhone || meeting.requesterPhone || '',
