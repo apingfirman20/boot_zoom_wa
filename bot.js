@@ -33,7 +33,12 @@ import {
 } from './src/services/zoom.js';
 import {
   createGoogleMeeting,
-  isGoogleConfigured
+  isGoogleConfigured,
+  getGooglePastMeetingDetails,
+  getGoogleMeetingParticipants,
+  getGoogleMeetingRecordings,
+  getGoogleMeetingSummary,
+  getRecentEndedGoogleMeetings
 } from './src/services/gmeet.js';
 import {
   formatMeetingTime,
@@ -68,90 +73,90 @@ let latestQr = null;
 let botStatus = 'connecting'; // 'connecting', 'waiting_qr', 'connected', 'disconnected'
 let connectedUser = null;
 
-// Setup file logger agar bot.log selalu terupdate baik di background maupun di terminal
+// Setup file logger (Hanya aktif di lokal Windows, dinonaktifkan di Railway/Cloud agar disk tidak penuh)
+const isCloud = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_STATIC_URL || process.env.DISABLE_FILE_LOG);
 let logStream = null;
-try {
-  logStream = fs.createWriteStream('./bot.log', { flags: 'a' });
-  logStream.on('error', (err) => {
-    origError.apply(console, ['⚠️ Gagal menulis ke bot.log (mungkin file sedang dibuka):', err.message]);
-  });
-} catch (e) {
-  origError.apply(console, ['⚠️ Gagal menginisialisasi bot.log:', e.message]);
+
+if (!isCloud) {
+  try {
+    const logPath = './bot.log';
+    // Batasi ukuran log lokal maksimal 5MB agar tidak membengkak puluhan MB
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > 5 * 1024 * 1024) {
+      fs.truncateSync(logPath, 0);
+    }
+    logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    logStream.on('error', (err) => {
+      origError.apply(console, ['⚠️ Gagal menulis ke bot.log:', err.message]);
+    });
+  } catch (e) {
+    origError.apply(console, ['⚠️ Gagal menginisialisasi bot.log:', e.message]);
+  }
 }
 
 const origLog = console.log;
 const origError = console.error;
 
-console.log = function (...args) {
-  const line = util.format(...args) + '\n';
-  try { if (logStream) logStream.write(line); } catch (e) {}
-  origLog.apply(console, args);
-};
+if (!isCloud && logStream) {
+  console.log = function (...args) {
+    const line = util.format(...args) + '\n';
+    try { if (logStream) logStream.write(line); } catch (e) {}
+    origLog.apply(console, args);
+  };
 
-console.error = function (...args) {
-  const line = util.format(...args) + '\n';
-  try { if (logStream) logStream.write(line); } catch (e) {}
-  origError.apply(console, args);
-};
+  console.error = function (...args) {
+    const line = util.format(...args) + '\n';
+    try { if (logStream) logStream.write(line); } catch (e) {}
+    origError.apply(console, args);
+  };
+}
 
 /**
  * Format pesan instruksi / panduan bot yang lengkap, rapi, dan informatif.
  */
-function formatHelpMessage(senderName = 'Kak/Pak/Bu') {
+function formatHelpMessage(senderName = 'Bapak/Ibu') {
   return [
-    `👋 Halo *${senderName}*! Saya adalah *Bot Asisten Zoom & Google Meet*.`,
-    `Berikut panduan lengkap cara menggunakan bot ini:`,
+    `Yth. *${senderName}*,`,
+    `Saya adalah *Asisten Virtual Penjadwalan Rapat (Zoom & Google Meet)*.`,
+    `Berikut adalah panduan format instruksi yang dapat Anda pergunakan:`,
     ``,
-    `➕ *1. CARA MEMBUAT JADWAL ZOOM & GOOGLE MEET*`,
-    `Cukup ketik permintaan dengan menyebutkan jam dan topik secara natural:`,
-    `• _"buatkan google meet jam 10 untuk TIM SOTS"_ *(Auto-Record & Rangkuman)*`,
-    `• _"buat gmeet besok jam 2 siang topik evaluasi mingguan"_`,
+    `📅 *1. PEMBUATAN JADWAL RAPAT*`,
+    `Anda dapat menyampaikan permohonan jadwal secara langsung dengan menyebutkan platform, waktu, dan agenda:`,
+    `• _"buatkan zoom jam 14.00 untuk koordinasi tim finance"_`,
+    `• _"buat zoom besok jam 10 pagi topik review bulanan rekam"_ *(Perekaman Cloud)*`,
+    `• _"buatkan google meet jam 10 untuk TIM SOTS"_`,
     `• _"minta link meet sekarang untuk rapat direksi"_`,
-    `• _"buatkan zoom jam 2 siang dengan tim finance"_`,
-    `• _"zoom besok jam 10 pagi topik review bulanan"_`,
-    `• _"buat zoom jam 3 sore topik pitching klien rekam"_ *(Auto Recording Cloud)*`,
     ``,
-    `✨ *Fitur Google Meet Pro:*`,
-    `• 🚪 *Langsung Masuk:* Peserta tidak perlu menunggu di-ACC host (tanpa knocking).`,
-    `• ⏱️ *Langsung Mulai:* Begitu ada peserta yang mengeklik link, room langsung aktif.`,
-    `• 📹 *Auto Recording & Rangkuman:* Otomatis merekam & catatan rapat dirangkum oleh Gemini.`,
-    ``,
-    `📅 *2. CARA CEK JADWAL MEETING*`,
-    `Untuk melihat semua jadwal meeting yang aktif / terjadwal:`,
+    `📋 *2. PEMERIKSAAN JADWAL TERDAFTAR*`,
+    `Untuk meninjau seluruh agenda rapat yang aktif:`,
     `• _"cek jadwal zoom"_ atau _"cek jadwal meeting"_`,
-    `• _"lihat jadwal"_`,
     `• _"!jadwal"_ atau _"!list"_`,
     ``,
-    `✏️ *3. CARA EDIT / UBAH JADWAL ZOOM*`,
-    `Untuk memindahkan jam atau mengubah topik meeting yang sudah dibuat:`,
-    `• _"ubah zoom jam 2 siang jadi jam 4 sore"_`,
+    `✏️ *3. PERUBAHAN JADWAL (RESCHEDULE)*`,
+    `Untuk memperbarui waktu atau topik agenda:`,
+    `• _"ubah zoom jam 14.00 jadi jam 16.00"_`,
     `• _"ganti jadwal zoom tim finance ke besok jam 10 pagi"_`,
-    `• _"reschedule zoom [Meeting ID] ke jam 3 sore"_`,
-    `• _"edit topik zoom jam 2 jadi Koordinasi Q3"_`,
+    `• _"reschedule zoom [Meeting ID] ke jam 15.00"_`,
     ``,
-    `🗑️ *4. CARA DELETE / BATALKAN ZOOM*`,
-    `Untuk membatalkan jadwal meeting tertentu:`,
-    `• _"hapus zoom jam 2 siang"_`,
-    `• _"batalkan zoom tim finance"_`,
+    `🗑️ *4. PEMBATALAN RAPAT*`,
+    `Untuk membatalkan agenda rapat tertentu:`,
+    `• _"batalkan zoom jam 14.00"_`,
+    `• _"hapus zoom tim finance"_`,
     `• _"hapus zoom [Meeting ID]"_`,
-    `• _"!batal"_`,
     ``,
-    `🎬 *5. REKAM LIVE MEETING (Sedang Berlangsung)*`,
-    `Jika meeting sudah berjalan dan ingin direkam ke Cloud:`,
-    `• _"rekam"_ atau _"rekam zoom sekarang"_ atau _"!rekam"_`,
+    `📹 *5. PEREKAMAN RAPAT LANGSUNG (LIVE)*`,
+    `Untuk merekam rapat yang sedang berlangsung:`,
+    `• _"rekam"_ atau _"rekam zoom sekarang"_`,
     ``,
-    `🛑 *6. MENGHENTIKAN MEETING (END BOY)*`,
-    `Untuk langsung menghentikan meeting yang sedang berlangsung:`,
-    `• _"end boy"_ *(otomatis menghentikan meeting live)*`,
-    `• _"end boy [Meeting ID]"_`,
-    `• _"stop meeting"_ atau _"akhiri zoom"_`,
+    `🛑 *6. MENGAKHIRI RAPAT BERLANGSUNG*`,
+    `Untuk menyelesaikan dan menutup rapat yang sedang berjalan:`,
+    `• _"akhiri meeting"_ atau _"stop zoom"_`,
+    `• _"end boy"_`,
     ``,
-    `📊 *7. REKAP KEHADIRAN & NOTULA ZOOM AI*`,
-    `Untuk melihat daftar peserta hadir dan notula AI rapat yang selesai:`,
-    `• _"rekap"_ atau _"rekap meeting"_ *(otomatis ambil rapat yang baru selesai)*`,
-    `• _"!rekap [Meeting ID]"_ atau _"!summary [Meeting ID]"_`,
+    `📊 *7. LAPORAN KEHADIRAN & NOTULA RAPAT*`,
+    `Untuk memperoleh rekap kehadiran dan catatan rapat:`,
+    `• _"rekap meeting"_ atau _"!rekap [Meeting ID]"_`,
     ``,
-    `💡 _Tips: Di grup WhatsApp, Anda juga bisa tag/mention saya untuk meminta jadwal!_`
+    `💡 _Catatan: Di dalam grup WhatsApp, silakan tag/mention akun ini untuk menyampaikan instruksi._`
   ].join('\n');
 }
 
@@ -166,23 +171,33 @@ async function sendRecordingNotification(meeting, recordings) {
     return;
   }
 
+  const isGMeet = meeting.platform === 'GMEET';
+  const platformName = isGMeet ? 'Google Meet' : 'Zoom Meeting';
   const formattedTime = formatMeetingTime(meeting.startTime);
+
   const textMsg = [
-    `🎬 *Rekaman Video Meeting Zoom Telah Siap!*`,
+    `📹 *NOTIFIKASI REKAMAN RAPAT ${platformName.toUpperCase()}*`,
     ``,
-    `📌 *Topik:* ${meeting.topic}`,
-    `🗓️ *Waktu:* ${formattedTime}`,
-    `🔗 *Link Video Rekaman:*`,
-    `${recordings.shareUrl}`,
+    `Yth. Bapak/Ibu,`,
+    `Rekaman video untuk agenda pertemuan berikut telah selesai diproses dan siap diakses:`,
     ``,
-    `🔑 *Password Rekaman:* ${recordings.password || '(Tanpa Password)'}`,
-    ``,
-    `Video rekaman dapat langsung ditonton atau diunduh melalui link di atas.`
-  ].join('\n');
+    `📌 *Topik Agenda:* ${meeting.topic}`,
+    `🗓️ *Waktu Pertemuan:* ${formattedTime}`,
+    `🔗 *Tautan Video Rekaman ${isGMeet ? '(Google Drive)' : ''}:*`,
+    `${recordings.shareUrl}`
+  ];
+
+  if (!isGMeet) {
+    textMsg.push(``);
+    textMsg.push(`🔑 *Passcode Rekaman:* ${recordings.password || '(Tanpa Passcode)'}`);
+  }
+
+  textMsg.push(``);
+  textMsg.push(`Rekaman dapat disaksikan atau diunduh langsung melalui tautan di atas.`);
 
   try {
-    await globalSock.sendMessage(targetPhone, { text: textMsg });
-    console.log(`✅ Link rekaman meeting ID ${meeting.id} berhasil dikirim ke ${targetPhone}!`);
+    await globalSock.sendMessage(targetPhone, { text: textMsg.join('\n') });
+    console.log(`✅ Link rekaman meeting ID ${meeting.id} (${platformName}) berhasil dikirim ke ${targetPhone}!`);
     updateMeetingRecording(meeting.id, { recordingSent: true });
   } catch (sendErr) {
     console.error(`Gagal mengirim pesan rekaman ke ${targetPhone}:`, sendErr.message);
@@ -199,10 +214,18 @@ async function pollPendingRecordings() {
 
   for (const m of pending) {
     try {
-      const rec = await getMeetingRecordings(m.id);
-      if (rec && rec.shareUrl) {
-        console.log(`🎬 Mendeteksi rekaman selesai di Zoom untuk meeting ${m.id} (${m.topic})`);
-        await sendRecordingNotification(m, rec);
+      if (m.platform === 'GMEET') {
+        const rec = await getGoogleMeetingRecordings(m.spaceName || m.id);
+        if (rec && rec.shareUrl && rec.state === 'FILE_GENERATED') {
+          console.log(`🎬 Mendeteksi rekaman selesai di Google Drive untuk meeting ${m.id} (${m.topic})`);
+          await sendRecordingNotification(m, rec);
+        }
+      } else {
+        const rec = await getMeetingRecordings(m.id);
+        if (rec && rec.shareUrl) {
+          console.log(`🎬 Mendeteksi rekaman selesai di Zoom untuk meeting ${m.id} (${m.topic})`);
+          await sendRecordingNotification(m, rec);
+        }
       }
     } catch (err) {
       // Ignored
@@ -221,22 +244,48 @@ setInterval(() => {
 async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRecipient = null) {
   if (!globalSock) return false;
   let meeting = getScheduledMeetingById(meetingId);
-  
-  // Jika meeting tidak terdaftar di database lokal (misal dibuat langsung dari web/aplikasi Zoom)
+  const isGMeet = meeting?.platform === 'GMEET' ||
+                  String(meetingId).includes('-') ||
+                  String(meetingId).startsWith('spaces/') ||
+                  String(meetingId).startsWith('conferenceRecords/');
+
+  // Jika meeting tidak terdaftar di database lokal (misal dibuat langsung dari web/aplikasi Zoom atau Google Meet)
   if (!meeting) {
-    try {
-      const pastDetails = await getPastMeetingDetails(meetingId);
-      meeting = {
-        id: String(meetingId),
-        topic: pastDetails?.topic || webhookObject?.topic || 'Zoom Meeting',
-        startTime: pastDetails?.startTime || webhookObject?.start_time || new Date().toISOString(),
-        duration: pastDetails?.duration || webhookObject?.duration || 60,
-        requesterPhone: targetRecipient || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE || null,
-        recordRequesterPhone: null,
-        summarySent: false
-      };
-    } catch (e) {
-      // Ignored
+    if (isGMeet) {
+      try {
+        const pastDetails = await getGooglePastMeetingDetails(meetingId);
+        if (pastDetails) {
+          meeting = {
+            id: pastDetails.meetingCode || String(meetingId),
+            platform: 'GMEET',
+            spaceName: pastDetails.spaceName || '',
+            topic: pastDetails.topic || 'Google Meet',
+            startTime: pastDetails.startTime || new Date().toISOString(),
+            duration: pastDetails.duration || 60,
+            requesterPhone: targetRecipient || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE || null,
+            recordRequesterPhone: null,
+            summarySent: false
+          };
+        }
+      } catch (e) {
+        // Ignored
+      }
+    } else {
+      try {
+        const pastDetails = await getPastMeetingDetails(meetingId);
+        meeting = {
+          id: String(meetingId),
+          platform: 'ZOOM',
+          topic: pastDetails?.topic || webhookObject?.topic || 'Zoom Meeting',
+          startTime: pastDetails?.startTime || webhookObject?.start_time || new Date().toISOString(),
+          duration: pastDetails?.duration || webhookObject?.duration || 60,
+          requesterPhone: targetRecipient || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE || null,
+          recordRequesterPhone: null,
+          summarySent: false
+        };
+      } catch (e) {
+        // Ignored
+      }
     }
   }
 
@@ -253,30 +302,49 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
     return false;
   }
 
-  console.log(`📊 Mengumpulkan data rekap peserta untuk meeting ${meeting.id} (${meeting.topic})...`);
+  const defaultTopic = isGMeet ? 'Google Meet' : 'Zoom Meeting';
+  console.log(`📊 Mengumpulkan data rekap peserta untuk meeting ${meeting.id} (${meeting.topic || defaultTopic})...`);
 
-  // Beri kesempatan retry jika Zoom butuh beberapa detik untuk memproses data peserta
   let participants = [];
   let pastDetails = null;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      pastDetails = await getPastMeetingDetails(meeting.id);
-      participants = await getPastMeetingParticipants(meeting.id);
-
-      if (participants.length > 0) {
-        break;
+  if (isGMeet) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        pastDetails = await getGooglePastMeetingDetails(meeting.spaceName || meeting.id);
+        if (pastDetails && pastDetails.conferenceRecordName) {
+          participants = await getGoogleMeetingParticipants(pastDetails.conferenceRecordName);
+          if (participants.length > 0) break;
+        }
+      } catch (fetchErr) {
+        console.error(`Percobaan ${attempt} mengambil peserta Google Meet ${meeting.id} gagal:`, fetchErr.message);
       }
-    } catch (fetchErr) {
-      console.error(`Percobaan ${attempt} mengambil data peserta meeting ${meeting.id} gagal:`, fetchErr.message);
-    }
 
-    if (attempt < 3) {
-      await new Promise(r => setTimeout(r, 6000));
+      if (attempt < 3 && participants.length === 0) {
+        await new Promise(r => setTimeout(r, 4000));
+      }
+    }
+  } else {
+    // Zoom retry loop
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        pastDetails = await getPastMeetingDetails(meeting.id);
+        participants = await getPastMeetingParticipants(meeting.id);
+
+        if (participants.length > 0) {
+          break;
+        }
+      } catch (fetchErr) {
+        console.error(`Percobaan ${attempt} mengambil data peserta meeting ${meeting.id} gagal:`, fetchErr.message);
+      }
+
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 6000));
+      }
     }
   }
 
-  const topic = pastDetails?.topic || webhookObject?.topic || meeting.topic || 'Zoom Meeting';
+  const topic = pastDetails?.topic || webhookObject?.topic || meeting.topic || defaultTopic;
   const startTime = pastDetails?.startTime || webhookObject?.start_time || webhookObject?.startTime || meeting.startTime;
   const endTime = pastDetails?.endTime || webhookObject?.end_time || webhookObject?.endTime || null;
 
@@ -290,7 +358,6 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
     }
   }
 
-  // Jika durasi dari rentang jam tidak dapat dihitung, gunakan durasi meeting Zoom (bukan total_minutes akumulatif seluruh peserta)
   if (!durationMinutes || durationMinutes <= 0) {
     durationMinutes = pastDetails?.duration || webhookObject?.duration || meeting.duration || 0;
   }
@@ -308,16 +375,23 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
     participantLines.push(`_Tidak ada peserta terdeteksi bergabung di ruang meeting._`);
   }
 
-  // Cek apakah ringkasan rapat dari Zoom AI Companion sudah siap
+  // Cek apakah ringkasan notula rapat dari AI sudah siap
   let aiSummary = null;
   try {
-    aiSummary = await getZoomMeetingSummary(meeting.id);
+    if (isGMeet) {
+      aiSummary = await getGoogleMeetingSummary(pastDetails?.conferenceRecordName || meeting.spaceName || meeting.id);
+    } else {
+      aiSummary = await getZoomMeetingSummary(meeting.id);
+    }
   } catch (aiErr) {
-    // Zoom AI mungkin masih memproses ringkasan
+    // AI mungkin masih memproses ringkasan
   }
 
+  const platformTitle = isGMeet ? 'GOOGLE MEET' : 'ZOOM MEETING';
+  const aiProvider = isGMeet ? 'Google Gemini AI' : 'Zoom AI';
+
   const summaryMsg = [
-    `📊 *LAPORAN KEHADIRAN ZOOM MEETING*`,
+    `📊 *LAPORAN KEHADIRAN ${platformTitle}*`,
     ``,
     `📌 *Topik:* ${topic}`,
     `⏱️ *Waktu:* ${timeRange}`,
@@ -332,7 +406,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 
   if (aiSummary && (aiSummary.summaryOverview || aiSummary.summaryDetails?.length > 0 || aiSummary.nextSteps?.length > 0)) {
     summaryMsg.push(``);
-    summaryMsg.push(`🤖 *RINGKASAN & NOTULA RAPAT (ZOOM AI)*`);
+    summaryMsg.push(`🤖 *RINGKASAN & NOTULA RAPAT (${aiProvider.toUpperCase()})*`);
     if (aiSummary.summaryOverview) {
       summaryMsg.push(``);
       summaryMsg.push(`📖 *Rangkuman Pembahasan:*`);
@@ -359,7 +433,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
     }
     summaryMsg.push(``);
     summaryMsg.push(`━━━━━━━━━━━━━━━━━━━`);
-    summaryMsg.push(`_Laporan kehadiran & notula otomatis disusun oleh Zoom AI._`);
+    summaryMsg.push(`_Laporan kehadiran & notula otomatis disusun oleh ${aiProvider}._`);
   } else {
     summaryMsg.push(`_Laporan otomatis dibuat setelah meeting berakhir._`);
   }
@@ -379,7 +453,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 }
 
 /**
- * Mengirimkan pesan ringkasan & notula rapat yang baru selesai disusun oleh Zoom AI Companion.
+ * Mengirimkan pesan ringkasan & notula rapat yang baru selesai disusun oleh AI (Zoom / Google Meet).
  */
 async function sendAiSummaryNotification(meetingId, summaryObj = null) {
   if (!globalSock) return;
@@ -389,6 +463,11 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
 
   // Jika sudah dikirimkan, jangan kirim ulang agar tidak dobel
   if (meeting?.aiSummarySent) return;
+
+  const isGMeet = meeting?.platform === 'GMEET' ||
+                  String(meetingId).includes('-') ||
+                  String(meetingId).startsWith('spaces/');
+  const aiProvider = isGMeet ? 'Google Gemini AI' : 'Zoom AI';
 
   let aiSummary = null;
   if (summaryObj && (summaryObj.summary_overview || summaryObj.summary_details || summaryObj.next_steps)) {
@@ -404,6 +483,8 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
       summaryDetails,
       nextSteps
     };
+  } else if (isGMeet) {
+    aiSummary = await getGoogleMeetingSummary(meeting?.spaceName || meetingId);
   } else {
     aiSummary = await getZoomMeetingSummary(meetingId);
   }
@@ -412,9 +493,10 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
     return;
   }
 
-  const topic = meeting?.topic || aiSummary.summaryTitle || 'Zoom Meeting';
+  const defaultTopic = isGMeet ? 'Google Meet' : 'Zoom Meeting';
+  const topic = meeting?.topic || aiSummary.summaryTitle || defaultTopic;
   const lines = [
-    `🤖 *RINGKASAN & NOTULA RAPAT (ZOOM AI)*`,
+    `🤖 *RINGKASAN & NOTULA RAPAT (${aiProvider.toUpperCase()})*`,
     ``,
     `📌 *Topik:* ${topic}`,
     `🆔 *Meeting ID:* ${meetingId}`,
@@ -428,7 +510,7 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
     lines.push(``);
   }
 
-  if (aiSummary.summaryDetails.length > 0) {
+  if (aiSummary.summaryDetails && aiSummary.summaryDetails.length > 0) {
     lines.push(`🔍 *Poin-Poin Penting:*`);
     aiSummary.summaryDetails.forEach(d => {
       if (d.label) lines.push(`• *${d.label}:* ${d.summary}`);
@@ -437,7 +519,7 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
     lines.push(``);
   }
 
-  if (aiSummary.nextSteps.length > 0) {
+  if (aiSummary.nextSteps && aiSummary.nextSteps.length > 0) {
     lines.push(`✅ *Tindak Lanjut / Action Items:*`);
     aiSummary.nextSteps.forEach((s, idx) => {
       lines.push(`${idx + 1}. ${s}`);
@@ -445,8 +527,13 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
     lines.push(``);
   }
 
+  if (aiSummary.summaryDocUrl) {
+    lines.push(`📄 *Dokumen Notula Lengkap:* ${aiSummary.summaryDocUrl}`);
+    lines.push(``);
+  }
+
   lines.push(`━━━━━━━━━━━━━━━━━━━`);
-  lines.push(`_Notula otomatis disusun oleh Zoom AI Companion._`);
+  lines.push(`_Notula otomatis disusun oleh ${aiProvider}._`);
 
   try {
     await globalSock.sendMessage(targetPhone, { text: lines.join('\n') });
@@ -467,17 +554,25 @@ async function pollPendingSummaries() {
   const pending = getMeetingsPendingSummary();
   for (const m of pending) {
     try {
-      const pastDetails = await getPastMeetingDetails(m.id);
-      if (pastDetails && (pastDetails.endTime || pastDetails.duration > 0)) {
-        console.log(`🏁 Mendeteksi meeting ${m.id} (${m.topic}) telah selesai di Zoom, memproses rekap...`);
-        await sendMeetingEndedSummary(m.id, pastDetails);
+      if (m.platform === 'GMEET') {
+        const pastDetails = await getGooglePastMeetingDetails(m.spaceName || m.id);
+        if (pastDetails && pastDetails.isEnded) {
+          console.log(`🏁 Mendeteksi meeting Google Meet ${m.id} (${m.topic}) telah selesai, memproses rekap...`);
+          await sendMeetingEndedSummary(m.id, pastDetails);
+        }
+      } else {
+        const pastDetails = await getPastMeetingDetails(m.id);
+        if (pastDetails && (pastDetails.endTime || pastDetails.duration > 0)) {
+          console.log(`🏁 Mendeteksi meeting ${m.id} (${m.topic}) telah selesai di Zoom, memproses rekap...`);
+          await sendMeetingEndedSummary(m.id, pastDetails);
+        }
       }
     } catch (err) {
       // Ignored
     }
   }
 
-  // 2. Cek meeting Zoom terbaru yang baru saja selesai (termasuk yang dibuat langsung di Zoom)
+  // 2. Cek meeting Zoom & Google Meet terbaru yang baru saja selesai
   const defaultRecipient = process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE;
   if (defaultRecipient) {
     try {
@@ -491,11 +586,23 @@ async function pollPendingSummaries() {
     } catch (err) {
       // Ignored
     }
+
+    try {
+      const recentGMeet = await getRecentEndedGoogleMeetings(3);
+      for (const gm of recentGMeet) {
+        const local = getScheduledMeetingById(gm.id) || getScheduledMeetingById(gm.spaceName);
+        if (!local || !local.summarySent) {
+          await sendMeetingEndedSummary(gm.spaceName || gm.id, null, defaultRecipient);
+        }
+      }
+    } catch (err) {
+      // Ignored
+    }
   }
 }
 
 /**
- * Pengecekan berkala (polling) untuk notula AI yang baru selesai diproses oleh server Zoom.
+ * Pengecekan berkala (polling) untuk notula AI yang baru selesai diproses oleh server.
  */
 async function pollPendingAiSummaries() {
   if (!globalSock) return;
@@ -504,10 +611,18 @@ async function pollPendingAiSummaries() {
 
   for (const m of pending) {
     try {
-      const summary = await getZoomMeetingSummary(m.id);
-      if (summary) {
-        console.log(`🤖 Mendeteksi notula AI untuk meeting ${m.id} (${m.topic}) telah siap, mengirimkan...`);
-        await sendAiSummaryNotification(m.id, summary);
+      if (m.platform === 'GMEET') {
+        const summary = await getGoogleMeetingSummary(m.spaceName || m.id);
+        if (summary) {
+          console.log(`🤖 Mendeteksi notula AI untuk Google Meet ${m.id} (${m.topic}) telah siap, mengirimkan...`);
+          await sendAiSummaryNotification(m.id, summary);
+        }
+      } else {
+        const summary = await getZoomMeetingSummary(m.id);
+        if (summary) {
+          console.log(`🤖 Mendeteksi notula AI untuk meeting ${m.id} (${m.topic}) telah siap, mengirimkan...`);
+          await sendAiSummaryNotification(m.id, summary);
+        }
       }
     } catch (err) {
       // Ignored
@@ -942,13 +1057,22 @@ async function startBot() {
       }
       cleanText = cleanText.replace(/^@bot\b/i, '').trim();
 
-      // Cegah looping jika pesan merupakan balasan dari bot itu sendiri
+      // Cegah looping jika pesan berasal dari akun bot itu sendiri
+      if (isFromMe) continue;
+
+      // Cegah looping jika pesan merupakan balasan teks template bot
       if (
+        messageText.startsWith('Yth. Bapak/Ibu') ||
+        messageText.startsWith('Mohon maaf Bapak/Ibu') ||
+        messageText.startsWith('Pemberitahuan Jadwal') ||
         messageText.startsWith('Berikut Pak/Bu') ||
         messageText.startsWith('Mohon maaf Pak/Bu') ||
         messageText.startsWith('Untuk di jam') ||
         messageText.startsWith('*✅ Link Zoom Meeting') ||
         messageText.startsWith('✅ *Jadwal Zoom') ||
+        messageText.startsWith('✅ *Konfirmasi') ||
+        messageText.startsWith('📊 *LAPORAN') ||
+        messageText.startsWith('📹 *NOTIFIKASI') ||
         messageText.startsWith('📅') ||
         messageText.startsWith('🎬') ||
         messageText.startsWith('👋 Halo') ||
@@ -1314,25 +1438,38 @@ async function startBot() {
 
           let targetMeetingId = summaryCmd.meetingId;
           if (!targetMeetingId) {
+            const activeList = getActiveMeetings();
+            const lastMeeting = activeList[activeList.length - 1];
+            if (lastMeeting) {
+              targetMeetingId = lastMeeting.spaceName || lastMeeting.id;
+            }
+          }
+          if (!targetMeetingId) {
             const recent = await getRecentEndedMeetings(1);
             if (recent.length > 0) {
               targetMeetingId = recent[0].id;
             }
           }
+          if (!targetMeetingId) {
+            const recentGMeet = await getRecentEndedGoogleMeetings(1);
+            if (recentGMeet.length > 0) {
+              targetMeetingId = recentGMeet[0].spaceName || recentGMeet[0].id;
+            }
+          }
 
           if (!targetMeetingId) {
-            const replyNoMeeting = `Maaf Pak/Bu, tidak ditemukan meeting yang baru selesai di akun Zoom.\nAnda bisa menyertakan Meeting ID secara spesifik, contoh:\n*!rekap 87103747663*`;
+            const replyNoMeeting = `Maaf Pak/Bu, tidak ditemukan meeting yang baru selesai di akun Zoom maupun Google Meet.\nAnda bisa menyertakan Meeting ID atau Kode Meet secara spesifik, contoh:\n*!rekap 87103747663* (Zoom)\n*!rekap pcd-gzmt-gco* (Google Meet)`;
             await sock.sendMessage(remoteJid, { text: replyNoMeeting }, { quoted: msg });
             continue;
           }
 
           await sock.sendMessage(remoteJid, {
-            text: `⏳ Sedang mengumpulkan data kehadiran dan notula AI untuk meeting ID *${targetMeetingId}*, mohon tunggu sebentar...`
+            text: `⏳ Sedang mengumpulkan data kehadiran dan notula AI untuk meeting *${targetMeetingId}*, mohon tunggu sebentar...`
           }, { quoted: msg });
 
           const ok = await sendMeetingEndedSummary(targetMeetingId, null, remoteJid);
           if (!ok) {
-            const failMsg = `⚠️ Maaf, belum dapat mengambil rekap untuk meeting ID *${targetMeetingId}*.\nPastikan meeting tersebut sudah berakhir di server Zoom.`;
+            const failMsg = `⚠️ Maaf, belum dapat mengambil rekap untuk meeting *${targetMeetingId}*.\nPastikan meeting tersebut sudah berakhir di server Zoom atau Google Meet.`;
             await sock.sendMessage(remoteJid, { text: failMsg }, { quoted: msg });
           }
         } catch (sumErr) {
@@ -1380,8 +1517,8 @@ async function startBot() {
           const { hasConflict, conflictingMeeting } = await checkScheduleConflict(command.startTime, command.durationMinutes, null, 'ZOOM');
           if (hasConflict && conflictingMeeting) {
             const confTime = formatMeetingTime(conflictingMeeting.startTime);
-            const replyConflict = `Mohon maaf Pak/Bu, di jam segitu (${confTime}) akun Zoom sedang dipakai oleh tim *${conflictingMeeting.topic}*.\n\n` +
-              `💡 _Solusi: Anda bisa membuat Google Meet (ketik: "buatkan gmeet jam 10") atau jadwalkan Zoom di jam lain agar tidak bentrok._`;
+            const replyConflict = `Mohon maaf Bapak/Ibu, pada waktu tersebut (${confTime}) akun Zoom sedang dipergunakan untuk agenda *${conflictingMeeting.topic}*.\n\n` +
+              `💡 _Alternatif Solusi: Anda dapat menggunakan Google Meet (contoh: "buatkan gmeet jam 10") atau menjadwalkan Zoom pada waktu lain agar tidak bertabrakan._`;
             await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
             console.log(`⚠️ Ditolak: Jadwal Zoom bentrok dengan tim ${conflictingMeeting.topic} (${confTime})`);
             continue;
@@ -1404,6 +1541,7 @@ async function startBot() {
             saveScheduledMeeting({
               meetingId: meeting.meetingCode || meeting.spaceName,
               platform: 'GMEET',
+              spaceName: meeting.spaceName,
               topic: command.topic,
               startTime: command.startTime,
               duration: command.durationMinutes,
@@ -1416,19 +1554,21 @@ async function startBot() {
 
             const formattedTime = formatMeetingTime(command.startTime);
 
-            // Format balasan WhatsApp sesuai kebutuhan user
+            // Format balasan WhatsApp resmi & formal
             const replySuccess = [
-              `Berikut Pak/Bu untuk Link Google Meet`,
-              `📌 *Topik:* ${meeting.topic}`,
-              `🗓️ *Waktu:* ${formattedTime}`,
-              `🔗 *Link Google Meet:*`,
-              `${meeting.joinUrl}`,
-              `🆔 *Meeting Code:* ${meeting.meetingCode}`,
-              `🚪 *Akses Masuk:* Langsung Masuk (Tanpa ACC Host / Tanpa Menunggu)`,
-              meeting.autoRecord ? `📹 *Auto Recording:* Aktif (Otomatis merekam saat meeting berjalan)` : null,
-              meeting.autoSummary ? `📝 *Smart Notes / Rangkuman:* Aktif (Notula otomatis dibuat oleh Gemini)` : null,
+              `Yth. Bapak/Ibu,`,
+              `Berikut informasi tautan Google Meet yang telah berhasil dibuat:`,
               ``,
-              `Peserta dapat langsung mengeklik link di atas untuk langsung bergabung dan memulai meeting.`
+              `📌 *Topik Agenda:* ${meeting.topic}`,
+              `🗓️ *Waktu Pelaksanaan:* ${formattedTime}`,
+              `🔗 *Tautan Google Meet:*`,
+              `${meeting.joinUrl}`,
+              `🆔 *Kode Meeting:* ${meeting.meetingCode || meeting.spaceName}`,
+              `🚪 *Akses Masuk:* Langsung Masuk (Tanpa menunggu persetujuan Host)`,
+              meeting.autoRecord ? `📹 *Perekaman Otomatis:* Aktif (Tersimpan di Google Drive)` : null,
+              meeting.autoSummary ? `📝 *Notula Rapat:* Aktif (Catatan otomatis disusun setelah rapat)` : null,
+              ``,
+              `Tautan di atas sudah dapat langsung dibagikan kepada seluruh peserta rapat.`
             ].filter(Boolean).join('\n');
 
             await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
@@ -1445,14 +1585,14 @@ async function startBot() {
                 timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
               }).format(nearbyDate);
 
-              const followUpText = `Untuk di jam ${nearbyHour} akan ada meeting tim ${nearbyMeeting.topic}, mohon dikondisikan ya.`;
+              const followUpText = `Pemberitahuan Jadwal: Pada pukul ${nearbyHour} WIB, akun Zoom akan dipergunakan untuk agenda *${nearbyMeeting.topic}*. Mohon dapat menyesuaikan durasi rapat. Terima kasih.`;
               await sock.sendMessage(remoteJid, { text: followUpText });
               console.log(`📢 Keterangan lanjutan jadwal terdekat berhasil dikirim: "${followUpText}"`);
             }
           } catch (gmeetErr) {
             console.error('❌ Gagal membuat Google Meet:', gmeetErr.message);
-            const errReply = `Maaf ${senderName}, terjadi kendala saat membuat Google Meet: ${gmeetErr.message}\n\n` +
-              `_💡 Tips: Pastikan akun Google sudah dihubungkan dengan menjalankan setup-google.bat di server bot._`;
+            const errReply = `Mohon maaf Bapak/Ibu, terjadi kendala saat membuat Google Meet: ${gmeetErr.message}\n\n` +
+              `_💡 Tips: Pastikan akun Google sudah terhubung dengan benar di sistem bot._`;
             await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
           }
           continue;
@@ -1484,17 +1624,20 @@ async function startBot() {
 
           const formattedTime = formatMeetingTime(command.startTime);
 
-          // Template balasan utama sesuai permintaan
+          // Template balasan resmi & formal
           const replySuccess = [
-            `Berikut Pak/Bu untuk Link Zoomnya`,
-            `Topik: ${meeting.topic}`,
-            `Waktu: ${formattedTime}`,
-            `🔗 Link Zoom:`,
+            `Yth. Bapak/Ibu,`,
+            `Berikut rincian tautan Zoom Meeting yang telah berhasil dijadwalkan:`,
+            ``,
+            `📌 *Topik Agenda:* ${meeting.topic}`,
+            `🗓️ *Waktu Pelaksanaan:* ${formattedTime}`,
+            `🔗 *Tautan Zoom:*`,
             `${meeting.joinUrl}`,
-            `🆔 Meeting ID: ${meeting.meetingId}`,
-            meeting.passcode ? `🔑 Passcode: ${meeting.passcode}` : null,
-            command.autoRecord ? `📹 *Auto Recording (Cloud):* Aktif\n_Link video dan password rekaman akan otomatis dikirimkan ke chat ini setelah meeting selesai._` : null,
-            `Link di atas sudah dapat langsung dibagikan kepada peserta meeting.`
+            `🆔 *Meeting ID:* ${meeting.meetingId}`,
+            meeting.passcode ? `🔑 *Passcode:* ${meeting.passcode}` : null,
+            command.autoRecord ? `📹 *Perekaman Cloud:* Aktif\n_Tautan rekaman video dan passcode akan otomatis dikirimkan setelah pertemuan berakhir._` : null,
+            ``,
+            `Tautan di atas sudah dapat langsung dibagikan kepada seluruh peserta rapat.`
           ].filter(Boolean).join('\n');
 
           await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
@@ -1511,15 +1654,14 @@ async function startBot() {
               timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
             }).format(nearbyDate);
 
-            const followUpText = `Untuk di jam ${nearbyHour} zoom akan dipakai oleh tim ${nearbyMeeting.topic}, mohon dikondisikan ya.`;
-            // Kirim sebagai chat lanjutan
+            const followUpText = `Pemberitahuan Jadwal: Pada pukul ${nearbyHour} WIB, akun Zoom akan dipergunakan untuk agenda *${nearbyMeeting.topic}*. Mohon dapat menyesuaikan durasi rapat. Terima kasih.`;
             await sock.sendMessage(remoteJid, { text: followUpText });
             console.log(`📢 Keterangan lanjutan jadwal terdekat berhasil dikirim: "${followUpText}"`);
           }
 
         } catch (zoomErr) {
           console.error('❌ Gagal membuat Zoom meeting:', zoomErr.message);
-          const errReply = `Maaf ${senderName}, terjadi kendala saat membuat meeting di Zoom: ${zoomErr.message}`;
+          const errReply = `Mohon maaf Bapak/Ibu, terjadi kendala saat membuat pertemuan di Zoom: ${zoomErr.message}`;
           await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
         }
 

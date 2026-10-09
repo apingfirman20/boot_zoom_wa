@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { checkMeetingExists } from './zoom.js';
+import { checkMeetingExists, getUpcomingZoomMeetings } from './zoom.js';
 import { parseToDate } from '../utils/datetime.js';
 
 const STORAGE_DIR = process.env.STORAGE_DIR || '.';
@@ -63,6 +63,7 @@ export function saveScheduledMeeting(meeting) {
     list.push({
       id: meeting.meetingId || meeting.id,
       platform: meeting.platform || 'ZOOM',
+      spaceName: meeting.spaceName || '',
       topic: meeting.topic,
       startTime: meeting.startTime,
       duration: Number(meeting.duration) || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
@@ -130,11 +131,22 @@ export function updateMeetingRecording(meetingId, updateData = {}) {
   try {
     const raw = fs.readFileSync(MEETINGS_FILE, 'utf-8');
     const list = JSON.parse(raw);
-    const targetId = String(meetingId).trim();
+    const targetId = String(meetingId).trim().toLowerCase();
+    const targetIdClean = targetId.replace(/-/g, '').replace(/^spaces\//, '');
     let updated = false;
 
     for (const m of list) {
-      if (String(m.id).trim() === targetId) {
+      const mId = String(m.id || '').trim().toLowerCase();
+      const mSpace = String(m.spaceName || '').trim().toLowerCase();
+      const mIdClean = mId.replace(/-/g, '').replace(/^spaces\//, '');
+      const mSpaceClean = mSpace.replace(/-/g, '').replace(/^spaces\//, '');
+
+      if (
+        mId === targetId ||
+        mSpace === targetId ||
+        mIdClean === targetIdClean ||
+        mSpaceClean === targetIdClean
+      ) {
         Object.assign(m, updateData);
         updated = true;
         break;
@@ -210,9 +222,23 @@ export function getMeetingsPendingAiSummary() {
  */
 export function getScheduledMeetingById(meetingId) {
   if (!meetingId) return null;
-  const targetId = String(meetingId).trim();
+  const targetId = String(meetingId).trim().toLowerCase();
+  const targetIdClean = targetId.replace(/-/g, '').replace(/^spaces\//, '');
   const meetings = getActiveMeetings();
-  return meetings.find(m => String(m.id).trim() === targetId) || null;
+
+  return meetings.find(m => {
+    const mId = String(m.id || '').trim().toLowerCase();
+    const mSpace = String(m.spaceName || '').trim().toLowerCase();
+    const mIdClean = mId.replace(/-/g, '').replace(/^spaces\//, '');
+    const mSpaceClean = mSpace.replace(/-/g, '').replace(/^spaces\//, '');
+
+    return (
+      mId === targetId ||
+      mSpace === targetId ||
+      mIdClean === targetIdClean ||
+      mSpaceClean === targetIdClean
+    );
+  }) || null;
 }
 
 /**
@@ -277,23 +303,52 @@ export function updateScheduledMeeting(meetingId, updateData = {}) {
 
 /**
  * Sinkronisasi jadwal lokal dengan status sebenarnya di Zoom API.
- * Menghapus meeting yang sudah dihapus manual oleh user di aplikasi/web Zoom.
+ * Menghapus meeting yang sudah dihapus manual oleh user di aplikasi/web Zoom,
+ * serta mengimpor meeting yang dibuat langsung di aplikasi Zoom ke database lokal.
  */
 export async function syncMeetingsWithZoom() {
   const meetings = getActiveMeetings();
-  if (meetings.length === 0) return [];
-
-  console.log(`🔄 Memverifikasi ${meetings.length} jadwal meeting dengan server Zoom...`);
   const stillValid = [];
 
-  for (const m of meetings) {
-    const exists = await checkMeetingExists(m.id);
-    if (!exists) {
-      console.log(`🗑️ Meeting ID ${m.id} (${m.topic}) sudah dihapus di Zoom, membersihkan dari database lokal.`);
-      removeScheduledMeeting(m.id);
-    } else {
-      stillValid.push(m);
+  // 1. Verifikasi meeting lokal yang masih ada di Zoom
+  if (meetings.length > 0) {
+    console.log(`🔄 Memverifikasi ${meetings.length} jadwal meeting dengan server Zoom...`);
+    for (const m of meetings) {
+      if (m.platform === 'ZOOM') {
+        const exists = await checkMeetingExists(m.id);
+        if (!exists) {
+          console.log(`🗑️ Meeting ID ${m.id} (${m.topic}) sudah dihapus di Zoom, membersihkan dari database lokal.`);
+          removeScheduledMeeting(m.id);
+        } else {
+          stillValid.push(m);
+        }
+      } else {
+        stillValid.push(m);
+      }
     }
+  }
+
+  // 2. Impor meeting yang dibuat langsung di aplikasi/web Zoom ke jadwal bot
+  try {
+    const upcomingZoom = await getUpcomingZoomMeetings();
+    for (const zm of upcomingZoom) {
+      const alreadyTracked = stillValid.some(m => String(m.id).trim() === String(zm.id).trim());
+      if (!alreadyTracked && zm.startTime) {
+        console.log(`📥 Mengimpor meeting dari Zoom App ke jadwal bot: ID ${zm.id} (${zm.topic}) pada ${zm.startTime}`);
+        saveScheduledMeeting({
+          meetingId: String(zm.id),
+          platform: 'ZOOM',
+          topic: zm.topic || 'Zoom Meeting',
+          startTime: zm.startTime,
+          duration: zm.duration || 60,
+          joinUrl: zm.joinUrl || '',
+          autoRecord: false
+        });
+        stillValid.push(zm);
+      }
+    }
+  } catch (syncErr) {
+    console.warn('⚠️ Gagal sinkronisasi meeting upcoming dari Zoom:', syncErr.message);
   }
 
   return stillValid;
@@ -301,9 +356,8 @@ export async function syncMeetingsWithZoom() {
 
 /**
  * Cek apakah ada jadwal meeting yang bertabrakan (jam yang sama / overlap).
- * Otomatis memvalidasi ke Zoom API jika ada jadwal yang bentrok:
- * Jika meeting ternyata sudah dihapus di Zoom oleh user, jadwal lokal akan otomatis dibersihkan
- * dan tidak lagi dianggap bentrok.
+ * Memeriksa jadwal lokal DAN server Zoom API secara real-time untuk memastikan
+ * tidak terjadi double meeting (termasuk meeting yang dibuat langsung dari aplikasi Zoom).
  * 
  * @param {string|Date} startTimeISO 
  * @param {number} durationMinutes 
@@ -329,14 +383,34 @@ export async function checkScheduleConflict(
   const targetEnd = targetStart + durationMinutes * 60 * 1000;
   const meetings = getActiveMeetings();
 
-  for (const m of meetings) {
+  // 1. Kumpulkan daftar meeting yang harus dicek: Gabungan database lokal dan Zoom API real-time
+  const meetingCandidates = [...meetings];
+
+  try {
+    const liveUpcoming = await getUpcomingZoomMeetings();
+    for (const zm of liveUpcoming) {
+      const existsInList = meetingCandidates.some(m => String(m.id).trim() === String(zm.id).trim());
+      if (!existsInList) {
+        meetingCandidates.push({
+          id: String(zm.id),
+          platform: 'ZOOM',
+          topic: zm.topic || 'Zoom Meeting',
+          startTime: zm.startTime,
+          duration: zm.duration || 60
+        });
+      }
+    }
+  } catch (err) {
+    // Jika Zoom API gagal, tetap gunakan database lokal
+  }
+
+  for (const m of meetingCandidates) {
     // Lewati jika ini adalah meeting yang sedang di-edit (tidak membenturkan dengan dirinya sendiri)
     if (excludeMeetingId && String(m.id).trim() === String(excludeMeetingId).trim()) {
       continue;
     }
 
     // Hanya bentrok jika meeting yang sudah ada adalah ZOOM (karena Zoom 1 akun host tidak bisa dipakai bersamaan)
-    // Meeting Google Meet tidak akan membenturkan jadwal Zoom
     if (m.platform === 'GMEET') {
       continue;
     }
@@ -347,14 +421,13 @@ export async function checkScheduleConflict(
     const existingEnd = existingStart + (m.duration || Number(process.env.DEFAULT_MEETING_DURATION) || 60) * 60 * 1000;
 
     // Overlap terjadi jika waktu meeting baru beririsan dengan waktu meeting yang sudah ada
-    // Misal: targetStart < existingEnd DAN targetEnd > existingStart
     if (targetStart < existingEnd && targetEnd > existingStart) {
       // Validasi langsung ke Zoom API: Apakah meeting ini masih eksis?
       const exists = await checkMeetingExists(m.id);
       if (!exists) {
         console.log(`💡 Jadwal bentrok dengan ID ${m.id} (${m.topic}) diabaikan karena meeting sudah dihapus di Zoom.`);
         removeScheduledMeeting(m.id);
-        continue; // Lanjut cek meeting lain
+        continue;
       }
 
       return {

@@ -622,17 +622,18 @@ export function parseSummaryCommand(messageText) {
   const lower = text.toLowerCase();
 
   const isPrefix = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower);
-  const isNatural = /^(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|hasil)?\b/i.test(lower) ||
+  const isNatural = /^(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|gmeet|google\s*meet|hasil)?\b/i.test(lower) ||
                     /^(?:rekap(?:an)?|summary|notula|ringkasan)$/i.test(lower) ||
-                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:meeting|rapat|zoom)\b/i.test(lower);
+                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:meeting|rapat|zoom|gmeet|google\s*meet)\b/i.test(lower);
 
   if (!isPrefix && !isNatural) {
     return null;
   }
 
-  // Cari apakah user menyertakan Meeting ID (angka 9-11 digit)
-  const idMatch = text.match(/\b(\d{9,11})\b/);
-  const meetingId = idMatch ? idMatch[1] : null;
+  // Cari apakah user menyertakan Meeting ID Zoom (angka 9-11 digit) atau Google Meet code (xxx-yyyy-zzz atau spaces/...)
+  const zoomMatch = text.match(/\b(\d{9,11})\b/);
+  const gmeetMatch = text.match(/\b([a-z]{3}-[a-z]{4}-[a-z]{3})\b/i) || text.match(/\bspaces\/([a-zA-Z0-9_-]+)\b/i);
+  const meetingId = zoomMatch ? zoomMatch[1] : (gmeetMatch ? gmeetMatch[0] : null);
 
   return {
     isSummaryCommand: true,

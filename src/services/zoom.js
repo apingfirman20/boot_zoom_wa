@@ -685,3 +685,34 @@ export async function getLiveZoomMeetings() {
     return [];
   }
 }
+
+/**
+ * Mengambil daftar seluruh meeting yang terjadwal di akun Zoom secara real-time.
+ * Digunakan untuk mencegah jadwal bertabrakan (double meeting).
+ * 
+ * @returns {Promise<Array<{ id: string, topic: string, startTime: string, duration: number, joinUrl: string }>>}
+ */
+export async function getUpcomingZoomMeetings() {
+  try {
+    const accessToken = await getZoomAccessToken();
+    const res = await fetch('https://api.zoom.us/v2/users/me/meetings?type=upcoming&page_size=100', {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data.meetings)) return [];
+
+    return data.meetings.map(m => ({
+      id: String(m.id),
+      topic: m.topic || 'Zoom Meeting',
+      startTime: m.start_time || '',
+      duration: Number(m.duration) || 60,
+      joinUrl: m.join_url || ''
+    }));
+  } catch (err) {
+    console.error('Gagal mengambil daftar upcoming meetings dari Zoom:', err.message);
+    return [];
+  }
+}
+

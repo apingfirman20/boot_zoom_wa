@@ -7,7 +7,6 @@
   "scripts": {
     "start": "node bot.js",
     "dev": "node bot.js",
-    "test": "node test-mock.js",
     "setup-google": "node setup-google.js"
   },
   "engines": {
