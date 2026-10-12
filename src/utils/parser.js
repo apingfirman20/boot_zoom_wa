@@ -215,8 +215,8 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   if (topic === 'Meeting Zoom' || topic === 'Google Meet') {
     let cleaned = text
       .replace(/^[!/](?:meeting|zoom|gmeet|meet)\s*/i, '')
-      .replace(/buatkan|bikin|tolong|minta|buat|link|zoom|gmeet|google|meet|meeting|miting|jadwal(?:kan)?/gi, '')
-      .replace(/sekarang|besok|lusa|juga/gi, '')
+      .replace(/\b(?:buatkan|bikin|tolong|minta|buat|link|zoom|gmeet|google|meeting|miting|meet|jadwal(?:kan)?)\b/gi, '')
+      .replace(/\b(?:sekarang|besok|lusa|juga)\b/gi, '')
       .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(?:pagi|siang|sore|malam))?/gi, '')
       .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(?:pagi|siang|sore|malam))?/gi, '')
       .replace(/\b(?:wib|wita|wit)\b/gi, '')
