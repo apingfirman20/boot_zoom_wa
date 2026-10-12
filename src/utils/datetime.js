@@ -62,6 +62,38 @@ export function getNowInTimezone(timezone = process.env.DEFAULT_TIMEZONE || 'Asi
 }
 
 /**
+ * Mendapatkan komponen waktu (jam, menit, tanggal) dari suatu Date/ISO string dalam timezone target.
+ * Digunakan untuk mencocokkan jadwal meeting secara akurat di server cloud (UTC).
+ * 
+ * @param {string|Date} dateInput
+ * @param {string} timezone
+ * @returns {{ year: number, month: number, day: number, hour: number, minute: number, second: number }}
+ */
+export function getDatePartsInTimezone(dateInput, timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta') {
+  const date = parseToDate(dateInput, timezone);
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  const parts = formatter.formatToParts(date);
+  const getPart = (type) => parts.find(p => p.type === type)?.value;
+  return {
+    year: parseInt(getPart('year'), 10),
+    month: parseInt(getPart('month'), 10),
+    day: parseInt(getPart('day'), 10),
+    hour: parseInt(getPart('hour'), 10),
+    minute: parseInt(getPart('minute'), 10),
+    second: parseInt(getPart('second'), 10)
+  };
+}
+
+/**
  * Mengonversi input waktu menjadi Date yang tepat.
  * Jika input berupa string ISO tanpa offset timezone (contoh: "2026-09-08T14:00:00"),
  * maka otomatis ditambahkan offset timezone target sehingga runtime tidak menganggapnya sebagai UTC 14.00.

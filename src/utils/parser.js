@@ -73,7 +73,7 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   // 1. Abaikan jika ini adalah perintah pembatalan / hapus, cek jadwal, edit, summary/rekap, hentikan meeting, atau info/panduan
   const isCancel = /(?:hapus|batal(?:kan)?|cancel|delete)/i.test(lower);
   const isList = /(?:cek\s+jadwal|lihat\s+jadwal|daftar\s+jadwal|list\s+jadwal|jadwal\s+(?:zoom|gmeet|meet)|daftar\s+(?:zoom|gmeet|meet)|list\s+(?:zoom|gmeet|meet)|ada\s+jadwal\s+apa|!jadwal|!list)/i.test(lower);
-  const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|gmeet|meet|google\s+meet|meeting|miting)?/i.test(lower) || /^[!/](?:edit|ubah|reschedule)/i.test(lower);
+  const isEdit = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal|jam|waktu|link)?\s*(?:zoom|gmeet|meet|google\s+meet|meeting|miting)\b/i.test(lower) || /^[!/](?:edit|ubah|reschedule)\b/i.test(lower);
   const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
   const isSummary = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower) || /^(?:rekap|summary|notula|ringkasan)/i.test(lower);
   const isEnd = /(?:end\s+boy|(?:end|akhiri|stop|hentikan|selesaikan|tutup)\s+(?:meeting|zoom|gmeet|meet|miting))/i.test(lower);
@@ -188,14 +188,18 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
     'dong', 'ya', 'yah', 'kak', 'bang', 'mas', 'mbak', 'min', 'bro', 'sis', 'pls', 'please',
     'tolong', 'minta', 'buatkan', 'bikin', 'link', 'zoom', 'gmeet', 'google', 'meet', 'meeting', 'miting',
     'rekam', 'direkam', 'record', 'recording', 'nanti', 'sekalian', 'jangan', 'lupa', 'di', 'juga',
-    'wib', 'wita', 'wit'
+    'wib', 'wita', 'wit', 'untuk', 'buat', 'dengan', 'sama', 'bahas', 'tentang', 'topik', 'judul'
   ];
 
   const recordCleanerRegex = /(?:jangan\s+lupa\s+)?(?:tolong\s+|nanti\s+|sekalian\s+|sambil\s+|mohon\s+)?(?:di\s*)?rekam(?:\s+ya)?|(?:auto\s*)?record(?:ing)?/gi;
 
+  // Bersihkan kata perintah aksi di awal kalimat (seperti "Buat link zoom sekarang untuk SSS")
+  // agar kata "Buat" di awal kalimat tidak keliru dianggap sebagai kata penunjuk topik
+  const textWithoutCommand = text.replace(/^(?:tolong\s+)?(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan)?)\s+(?:link\s+)?(?:zoom|gmeet|google\s+meet|meet|meeting|miting)?\s*/i, '');
+
   // Pola A: dengan/sama/buat/untuk/bahas/tentang/judul/topik [tim / topik]
-  const topicPrefixRegex = /(?:dengan|sama|buat|untuk|bahas|tentang|judul|topik)\s+([a-zA-Z0-9\s-_]+)/i;
-  const matchPrefix = text.match(topicPrefixRegex);
+  const topicPrefixRegex = /(?:dengan|sama|untuk|bahas|tentang|judul|topik|buat)\s+([a-zA-Z0-9\s-_]+)/i;
+  const matchPrefix = textWithoutCommand.match(topicPrefixRegex) || text.match(topicPrefixRegex);
 
   if (matchPrefix && matchPrefix[1]) {
     let candidate = matchPrefix[1]
@@ -399,8 +403,9 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  const isEditTrigger = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal\s+)?(?:link\s+)?(?:zoom|meeting|miting)?/i.test(lower) ||
-                        /^[!/](?:edit|ubah|reschedule)/i.test(lower);
+  const isEditTrigger = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal|jam|waktu|link)?\s*(?:zoom|meeting|miting|gmeet|meet)\b/i.test(lower) ||
+                        /(?:zoom|meeting|miting|gmeet|meet)\s+(?:diubah|diganti|di-reschedule)\b/i.test(lower) ||
+                        /^[!/](?:edit|ubah|reschedule)\b/i.test(lower);
 
   if (!isEditTrigger) return null;
 

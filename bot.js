@@ -44,7 +44,8 @@ import {
   formatMeetingTime,
   formatMeetingRange,
   formatDurationHuman,
-  parseToDate
+  parseToDate,
+  getDatePartsInTimezone
 } from './src/utils/datetime.js';
 import {
   checkScheduleConflict,
@@ -1060,6 +1061,16 @@ async function startBot() {
       // Cegah looping jika pesan berasal dari akun bot itu sendiri
       if (isFromMe) continue;
 
+      // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal
+      // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
+      if (isGroup && !isBotMentioned) {
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat)/i.test(cleanText) ||
+                                  /^[!/#]/.test(cleanText);
+        if (!hasMeetingContext) {
+          continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
+        }
+      }
+
       // Cegah looping jika pesan merupakan balasan teks template bot
       if (
         messageText.startsWith('Yth. Bapak/Ibu') ||
@@ -1097,11 +1108,15 @@ async function startBot() {
             matchedMeeting = activeMeetings.find(m => String(m.id).includes(cancelCmd.meetingId));
           } else if (cancelCmd.matchedHour !== null) {
             matchedMeeting = activeMeetings.find(m => {
-              const d = new Date(m.startTime);
-              const h = d.getHours();
-              return h === cancelCmd.matchedHour ||
-                     (cancelCmd.matchedHour > 12 && h === cancelCmd.matchedHour - 12) ||
-                     (cancelCmd.matchedHour <= 12 && h === cancelCmd.matchedHour + 12);
+              const parts = getDatePartsInTimezone(m.startTime, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
+              const hourMatch = parts.hour === cancelCmd.matchedHour ||
+                                (cancelCmd.matchedHour > 12 && parts.hour === cancelCmd.matchedHour - 12) ||
+                                (cancelCmd.matchedHour <= 12 && parts.hour === cancelCmd.matchedHour + 12);
+              if (!hourMatch) return false;
+              if (cancelCmd.matchedMinute !== null && cancelCmd.matchedMinute !== undefined && cancelCmd.matchedMinute > 0) {
+                return parts.minute === cancelCmd.matchedMinute;
+              }
+              return true;
             });
           } else if (cancelCmd.targetTopic) {
             const term = cancelCmd.targetTopic.toLowerCase();
@@ -1114,7 +1129,7 @@ async function startBot() {
           }
 
           if (!matchedMeeting) {
-            const noMatchText = `Mohon maaf Pak/Bu, tidak ditemukan jadwal meeting Zoom yang cocok untuk dibatalkan.\nKetik *cek jadwal zoom* untuk melihat jadwal yang masih aktif.`;
+            const noMatchText = `Mohon maaf Bapak/Ibu, tidak ditemukan jadwal meeting yang cocok untuk dibatalkan.\nKetik *cek jadwal zoom* untuk melihat daftar jadwal yang masih aktif.`;
             await sock.sendMessage(remoteJid, { text: noMatchText }, { quoted: msg });
             continue;
           }
@@ -1161,11 +1176,10 @@ async function startBot() {
             matchedMeeting = activeMeetings.find(m => String(m.id).includes(editCmd.meetingId));
           } else if (editCmd.targetOldHour !== null) {
             matchedMeeting = activeMeetings.find(m => {
-              const d = new Date(m.startTime);
-              const h = d.getHours();
-              return h === editCmd.targetOldHour ||
-                     (editCmd.targetOldHour > 12 && h === editCmd.targetOldHour - 12) ||
-                     (editCmd.targetOldHour <= 12 && h === editCmd.targetOldHour + 12);
+              const parts = getDatePartsInTimezone(m.startTime, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
+              return parts.hour === editCmd.targetOldHour ||
+                     (editCmd.targetOldHour > 12 && parts.hour === editCmd.targetOldHour - 12) ||
+                     (editCmd.targetOldHour <= 12 && parts.hour === editCmd.targetOldHour + 12);
             });
           } else if (editCmd.targetTopic) {
             const term = editCmd.targetTopic.toLowerCase();
@@ -1175,13 +1189,12 @@ async function startBot() {
             });
           }
           
-          if (!matchedMeeting && activeMeetings.length === 1) {
+          if (!matchedMeeting && activeMeetings.length === 1 && (editCmd.newStartTime || editCmd.newTopic)) {
             matchedMeeting = activeMeetings[0];
           }
 
-          if (!matchedMeeting) {
-            const noMatchText = `Mohon maaf Pak/Bu, tidak ditemukan jadwal meeting Zoom yang cocok untuk diubah.\nKetik *cek jadwal zoom* untuk melihat jadwal yang masih aktif.`;
-            await sock.sendMessage(remoteJid, { text: noMatchText }, { quoted: msg });
+          // Abaikan jika tidak ada meeting yang cocok atau tidak ada instruksi perubahan waktu/topik yang jelas
+          if (!matchedMeeting || (!editCmd.newStartTime && !editCmd.newTopic)) {
             continue;
           }
 
