@@ -15,30 +15,47 @@ function getAiClient() {
 }
 
 /**
+ * Memeriksa apakah fitur Gemini AI diaktifkan.
+ * @returns {boolean}
+ */
+export function isGeminiEnabled() {
+  return process.env.USE_GEMINI_AI === 'true' && Boolean(process.env.GEMINI_API_KEY);
+}
+
+/**
  * Menganalisis pesan teks dari pengguna WhatsApp menggunakan Gemini API.
  * Mengekstrak intent, waktu/tanggal meeting, durasi, topik, dan kebutuhan info tambahan.
+ * Dilengkapi batas waktu (timeout) 6 detik agar tidak memperlambat respon bot.
  * 
  * @param {string} userMessage - Pesan chat dari pengguna WhatsApp
  * @param {string} senderName - Nama pengirim jika tersedia
+ * @param {number} timeoutMs - Batas maksimal tunggu (default 6000 ms)
  * @returns {Promise<{
  *   intent: 'CREATE_MEETING' | 'OTHER',
+ *   platform: 'ZOOM' | 'GMEET',
  *   topic: string,
  *   startTime: string | null,
  *   durationMinutes: number,
  *   needsMoreInfo: boolean,
  *   replyMessage: string
- * }>}
+ * }|null>}
  */
-export async function extractMeetingDetails(userMessage, senderName = '') {
+export async function extractMeetingDetails(userMessage, senderName = '', timeoutMs = 6000) {
+  if (!isGeminiEnabled()) return null;
+
   const ai = getAiClient();
-  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const timeContext = getCurrentTimeContext();
 
   const systemInstruction = `
-Kamu adalah asisten cerdas WhatsApp yang bertugas mendeteksi apakah pengguna ingin menjadwalkan/membuat pertemuan video (Zoom Meeting atau Google Meet).
+Kamu adalah asisten eksekutif cerdas WhatsApp yang bertugas melayani pembuatan dan penjadwalan pertemuan online (Zoom Meeting atau Google Meet).
 Waktu lokal saat ini: ${timeContext.localString}
 Timezone: ${timeContext.timezone}
 ISO Waktu Saat Ini: ${timeContext.isoString}
+
+Gaya Bahasa:
+- Sangat sopan, formal, profesional, dan ramah (executive standard).
+- Gunakan sapaan Bapak/Ibu.
 
 Panduan Ekstraksi:
 1. Jika pengguna ingin membuat/menjadwalkan meeting:
@@ -48,16 +65,16 @@ Panduan Ekstraksi:
    - Ekstrak "startTime": Hitung tanggal dan jam berdasarkan kata-kata relatif seperti "nanti jam 4 sore", "besok jam 10 pagi", "lusa", "hari Senin jam 14:00". Konversikan ke format ISO 8601 lengkap dengan offset timezone (contoh: "2026-09-08T14:00:00+07:00") atau UTC Z.
    - Jika pengguna meminta meeting tapi TIDAK menyebutkan jam/hari sama sekali:
      - Set "needsMoreInfo" = true.
-     - Tuliskan "replyMessage" yang ramah dan sopan menanyakan kapan waktu yang diinginkan.
+     - Tuliskan "replyMessage" yang ramah dan sopan menanyakan kapan waktu yang diinginkan Bapak/Ibu.
    - Ekstrak "durationMinutes": Durasi meeting dalam menit (default: 60 menit / 1 jam jika tidak disebutkan).
 
 2. Jika pengguna HANYA menyapa, bertanya hal umum, atau tidak ada niat membuat meeting:
    - Set "intent" = "OTHER".
    - Set "needsMoreInfo" = false.
-   - Tuliskan "replyMessage" yang ramah, memperkenalkan diri sebagai bot pembuat link Zoom & Google Meet otomatis, dan memberi tahu cara menggunakannya (contoh: "Ketik 'Tolong buatkan google meet jam 10 untuk TIM SOTS'").
+   - Tuliskan "replyMessage" yang ramah dan formal, memperkenalkan diri sebagai asisten penjadwalan Zoom & Google Meet, serta memberikan contoh penggunaan (contoh: "Ketik 'Tolong buatkan zoom jam 10 pagi untuk Review Project'").
 `.trim();
 
-  try {
+  const callPromise = (async () => {
     const response = await ai.models.generateContent({
       model: modelName,
       contents: `Pesan dari pengguna ${senderName ? `(${senderName})` : ''}: "${userMessage}"`,
@@ -95,7 +112,7 @@ Panduan Ekstraksi:
             },
             replyMessage: {
               type: Type.STRING,
-              description: 'Pesan balasan ke pengguna WhatsApp'
+              description: 'Pesan balasan formal ke pengguna WhatsApp'
             }
           },
           required: ['intent', 'platform', 'topic', 'durationMinutes', 'needsMoreInfo', 'replyMessage']
@@ -113,10 +130,18 @@ Panduan Ekstraksi:
       startTime: parsed.startTime || null,
       durationMinutes: parsed.durationMinutes || Number(process.env.DEFAULT_MEETING_DURATION) || 60,
       needsMoreInfo: Boolean(parsed.needsMoreInfo),
-      replyMessage: parsed.replyMessage || 'Halo! Saya bot pembuat link Zoom & Google Meet otomatis.'
+      replyMessage: parsed.replyMessage || 'Halo! Saya asisten bot pembuat link Zoom & Google Meet otomatis.'
     };
+  })();
+
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Gemini API timeout (${timeoutMs}ms)`)), timeoutMs)
+  );
+
+  try {
+    return await Promise.race([callPromise, timeoutPromise]);
   } catch (error) {
-    console.error('Error saat memanggil Gemini API:', error);
-    throw error;
+    console.warn(`⚠️ Gemini API fallback warning (${error.message}). Melanjutkan tanpa AI.`);
+    return null;
   }
 }

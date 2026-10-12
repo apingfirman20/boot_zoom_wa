@@ -197,8 +197,8 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   // agar kata "Buat" di awal kalimat tidak keliru dianggap sebagai kata penunjuk topik
   const textWithoutCommand = text.replace(/^(?:tolong\s+)?(?:buat(?:kan)?|bikin(?:in)?|minta|jadwal(?:kan)?)\s+(?:link\s+)?(?:zoom|gmeet|google\s+meet|meet|meeting|miting)?\s*/i, '');
 
-  // Pola A: dengan/sama/buat/untuk/bahas/tentang/judul/topik [tim / topik]
-  const topicPrefixRegex = /(?:dengan|sama|untuk|bahas|tentang|judul|topik|buat)\s+([a-zA-Z0-9\s-_]+)/i;
+  // Pola A: dengan/sama/buat/untuk/bahas/tentang/judul/topik/nama/agenda [tim / topik]
+  const topicPrefixRegex = /(?:dengan|sama|untuk|bahas|tentang|judul|topik|buat|nama|agenda)\s+([a-zA-Z0-9\s-_]+)/i;
   const matchPrefix = textWithoutCommand.match(topicPrefixRegex) || text.match(topicPrefixRegex);
 
   if (matchPrefix && matchPrefix[1]) {
@@ -403,7 +403,8 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  const isEditTrigger = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal|jam|waktu|link)?\s*(?:zoom|meeting|miting|gmeet|meet)\b/i.test(lower) ||
+  const isEditTrigger = /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal|jam|waktu|link|topik|judul|nama|agenda)?\s*(?:zoom|meeting|miting|gmeet|meet)\b/i.test(lower) ||
+                        /(?:ubah|ganti|edit|reschedule|geser)\s+(?:jadwal|jam|waktu|link|topik|judul|nama|agenda)\b/i.test(lower) ||
                         /(?:zoom|meeting|miting|gmeet|meet)\s+(?:diubah|diganti|di-reschedule)\b/i.test(lower) ||
                         /^[!/](?:edit|ubah|reschedule)\b/i.test(lower);
 
@@ -449,11 +450,11 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
       targetOldHour = normalizeHour(h, period);
     }
 
-    const topicMatch = oldPart.match(/(?:tim|untuk|dengan|buat|topik)\s+([a-zA-Z0-9\s-_]+)/i);
+    const topicMatch = oldPart.match(/(?:tim|untuk|dengan|buat|topik|judul|agenda|nama)\s+([a-zA-Z0-9\s-_]+)/i);
     if (topicMatch && topicMatch[1]) {
       const candidate = topicMatch[1]
-        .replace(/jam\s*\d+/gi, '')
-        .replace(/\b(?:zoom|meeting|miting)\b/gi, '')
+        .replace(/jam\s*\d+([.:]\d+)?\s*(pagi|siang|sore|malam|subuh)?/gi, '')
+        .replace(/\b(?:zoom|meeting|miting|gmeet|meet)\b/gi, '')
         .trim();
       if (candidate.length > 1) {
         targetTopic = candidate;
@@ -500,22 +501,29 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
 
   // 5. Cek apakah ada perubahan topik baru
   let newTopic = null;
-  if (oldPart.toLowerCase().includes('topik') || oldPart.toLowerCase().includes('judul')) {
-    if (newPart) {
-      newTopic = newPart
-        .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
-        .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
-        .replace(/besok|lusa|hari ini/gi, '')
-        .trim();
+
+  // Kasus A: Jika di bagian baru ada penunjuk topik eksplisit (misal "topik Evaluasi", "nama Kickoff", "agenda Review")
+  const newPartTopicMatch = newPart.match(/(?:topik|judul|nama|agenda)\s*(?:baru\s*)?[:=]?\s*([a-zA-Z0-9\s-_]+)/i);
+  if (newPartTopicMatch && newPartTopicMatch[1]) {
+    let cleanCand = newPartTopicMatch[1]
+      .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+      .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+      .replace(/\b(?:besok|lusa|hari ini|sekarang)\b/gi, '')
+      .replace(/\b(?:zoom|meeting|miting|gmeet|meet)\b/gi, '')
+      .trim();
+    if (cleanCand.length > 1) {
+      newTopic = cleanCand;
     }
-  } else {
-    const topicKeywordMatch = text.match(/(?:topik|judul)\s+(?:baru\s+)?(?:jadi|menjadi|ke)?\s*[:=]?\s*([a-zA-Z0-9\s-_]+)/i);
-    if (topicKeywordMatch && topicKeywordMatch[1]) {
-      newTopic = topicKeywordMatch[1]
-        .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}/gi, '')
-        .replace(/jam\s*\d{1,2}/gi, '')
-        .replace(/besok|lusa|hari ini/gi, '')
-        .trim();
+  } else if (/(?:topik|judul|nama|agenda)/i.test(oldPart)) {
+    // Kasus B: Bagian perintah lama meminta ganti topik/nama/judul (misal "ubah topik zoom jam 10 jadi Evaluasi Q3")
+    let cleanCand = newPart
+      .replace(/(?:jam\s*)?\d{1,2}[.:]\d{2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+      .replace(/jam\s*\d{1,2}(?:\s*(?:wib|wita|wit))?(?:\s*(pagi|siang|sore|malam))?/gi, '')
+      .replace(/\b(?:besok|lusa|hari ini|sekarang)\b/gi, '')
+      .replace(/\b(?:zoom|meeting|miting|gmeet|meet)\b/gi, '')
+      .trim();
+    if (cleanCand.length > 1) {
+      newTopic = cleanCand;
     }
   }
 

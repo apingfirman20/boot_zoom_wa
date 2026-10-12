@@ -41,6 +41,10 @@ import {
   getRecentEndedGoogleMeetings
 } from './src/services/gmeet.js';
 import {
+  extractMeetingDetails,
+  isGeminiEnabled
+} from './src/services/gemini.js';
+import {
   formatMeetingTime,
   formatMeetingRange,
   formatDurationHuman,
@@ -1134,26 +1138,30 @@ async function startBot() {
             continue;
           }
 
-          try {
-            await deleteZoomMeeting(matchedMeeting.id);
-          } catch (delApiErr) {
-            console.warn(`Peringatan saat panggil Zoom API delete (${delApiErr.message}), tetap bersihkan lokal.`);
+          const isGMeet = matchedMeeting.platform === 'GMEET';
+          if (!isGMeet) {
+            try {
+              await deleteZoomMeeting(matchedMeeting.id);
+            } catch (delApiErr) {
+              console.warn(`Peringatan saat panggil Zoom API delete (${delApiErr.message}), tetap bersihkan lokal.`);
+            }
           }
 
           removeScheduledMeeting(matchedMeeting.id);
 
           const formattedTime = formatMeetingTime(matchedMeeting.startTime);
+          const platformName = isGMeet ? 'Google Meet' : 'Zoom';
           const replyCancel = [
-            `✅ *Jadwal Zoom Berhasil Dibatalkan & Dihapus:*`,
+            `✅ *Jadwal ${platformName} Berhasil Dibatalkan & Dihapus:*`,
             `📌 *Topik:* ${matchedMeeting.topic}`,
             `🗓️ *Waktu:* ${formattedTime}`,
-            `🆔 *Meeting ID:* ${matchedMeeting.id}`,
+            `🆔 *ID Meeting:* ${matchedMeeting.id}`,
             ``,
             `Jadwal pada jam tersebut sekarang sudah kosong dan bisa digunakan kembali.`
           ].join('\n');
 
           await sock.sendMessage(remoteJid, { text: replyCancel }, { quoted: msg });
-          console.log(`✅ Meeting ${matchedMeeting.id} (${matchedMeeting.topic}) berhasil dibatalkan.`);
+          console.log(`✅ Meeting ${matchedMeeting.id} (${matchedMeeting.topic}) [${platformName}] berhasil dibatalkan.`);
         } catch (cancelErr) {
           console.error('❌ Error memproses pembatalan meeting:', cancelErr);
         }
@@ -1198,12 +1206,13 @@ async function startBot() {
             continue;
           }
 
+          const isGMeet = matchedMeeting.platform === 'GMEET';
           const newStartTime = editCmd.newStartTime || matchedMeeting.startTime;
           const newTopic = editCmd.newTopic || matchedMeeting.topic;
           const duration = matchedMeeting.duration || 60;
 
-          // Cek bentrok jika waktu berubah
-          if (editCmd.newStartTime && editCmd.newStartTime !== matchedMeeting.startTime) {
+          // Cek bentrok jika waktu berubah (hanya untuk Zoom, karena host Zoom tidak bisa double meeting)
+          if (!isGMeet && editCmd.newStartTime && editCmd.newStartTime !== matchedMeeting.startTime) {
             const { hasConflict, conflictingMeeting } = await checkScheduleConflict(newStartTime, duration, matchedMeeting.id);
             if (hasConflict && conflictingMeeting) {
               const confTime = formatMeetingTime(conflictingMeeting.startTime);
@@ -1213,18 +1222,20 @@ async function startBot() {
             }
           }
 
-          // Panggil Zoom API untuk update meeting
-          try {
-            await updateZoomMeeting(matchedMeeting.id, {
-              topic: newTopic,
-              startTime: newStartTime,
-              duration: duration
-            });
-          } catch (zoomUpdateErr) {
-            console.error('Gagal update meeting di server Zoom:', zoomUpdateErr.message);
-            const errMsg = `Mohon maaf, terjadi kendala saat memperbarui meeting di Zoom: ${zoomUpdateErr.message}`;
-            await sock.sendMessage(remoteJid, { text: errMsg }, { quoted: msg });
-            continue;
+          // Panggil Zoom API untuk update meeting jika platform Zoom
+          if (!isGMeet) {
+            try {
+              await updateZoomMeeting(matchedMeeting.id, {
+                topic: newTopic,
+                startTime: newStartTime,
+                duration: duration
+              });
+            } catch (zoomUpdateErr) {
+              console.error('Gagal update meeting di server Zoom:', zoomUpdateErr.message);
+              const errMsg = `Mohon maaf, terjadi kendala saat memperbarui meeting di Zoom: ${zoomUpdateErr.message}`;
+              await sock.sendMessage(remoteJid, { text: errMsg }, { quoted: msg });
+              continue;
+            }
           }
 
           // Perbarui di database lokal
@@ -1235,20 +1246,21 @@ async function startBot() {
           });
 
           const formattedNewTime = formatMeetingTime(newStartTime);
+          const platformName = isGMeet ? 'Google Meet' : 'Zoom';
           const replySuccessEdit = [
-            `✅ *Jadwal Zoom Berhasil Diperbarui / Reschedule:*`,
+            `✅ *Jadwal ${platformName} Berhasil Diperbarui / Reschedule:*`,
             `📌 *Topik:* ${newTopic}`,
             `🗓️ *Waktu Baru:* ${formattedNewTime}`,
-            `🆔 *Meeting ID:* ${matchedMeeting.id}`,
-            matchedMeeting.passcode ? `🔑 *Passcode:* ${matchedMeeting.passcode}` : null,
-            `🔗 *Link Zoom:*`,
+            `🆔 *ID Meeting:* ${matchedMeeting.id}`,
+            (!isGMeet && matchedMeeting.passcode) ? `🔑 *Passcode:* ${matchedMeeting.passcode}` : null,
+            `🔗 *Link ${platformName}:*`,
             `${matchedMeeting.joinUrl}`,
             ``,
-            `Link meeting tetap sama dan jadwal sudah terupdate di server Zoom.`
+            `Link meeting tetap sama dan jadwal sudah diperbarui.`
           ].filter(Boolean).join('\n');
 
           await sock.sendMessage(remoteJid, { text: replySuccessEdit }, { quoted: msg });
-          console.log(`✅ Meeting ${matchedMeeting.id} berhasil diupdate ke waktu: ${formattedNewTime}, topik: ${newTopic}`);
+          console.log(`✅ Meeting ${matchedMeeting.id} [${platformName}] berhasil diupdate ke waktu: ${formattedNewTime}, topik: ${newTopic}`);
         } catch (editErr) {
           console.error('❌ Error memproses edit meeting:', editErr);
         }
@@ -1509,11 +1521,49 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // F. PROSES PERINTAH MEMBUAT MEETING ZOOM
+      // F. PROSES PERINTAH MEMBUAT MEETING (ZOOM & GOOGLE MEET)
       // -----------------------------------------------------------------------
-      const command = parseMeetingCommand(cleanText);
+      let command = parseMeetingCommand(cleanText);
 
-      // Jika TIDAK ADA kata kunci perintah meeting, abaikan sama sekali (tidak perlu dijawab)
+      // Fallback Cerdas: Jika regex lokal belum menangkap dan fitur Gemini AI diaktifkan
+      if (!command && isGeminiEnabled()) {
+        const isPrivateChat = !isGroup;
+        // Di grup WhatsApp, hanya layani Gemini jika bot di-mention/di-tag langsung
+        // agar bot tidak pernah "ikut-ikutan" percakapan bebas anggota grup
+        const allowGemini = isPrivateChat || (isGroup && isBotMentioned);
+        if (allowGemini) {
+          try {
+            console.log(`🤖 [Gemini AI Fallback] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}"`);
+            const aiRes = await extractMeetingDetails(cleanText, senderName);
+            if (aiRes) {
+              if (aiRes.intent === 'CREATE_MEETING') {
+                if (aiRes.needsMoreInfo) {
+                  await sock.readMessages([msg.key]);
+                  await sock.sendMessage(remoteJid, { text: aiRes.replyMessage }, { quoted: msg });
+                  continue;
+                }
+                command = {
+                  platform: aiRes.platform || 'ZOOM',
+                  topic: aiRes.topic || (aiRes.platform === 'GMEET' ? 'Google Meet' : 'Zoom Meeting'),
+                  startTime: aiRes.startTime,
+                  durationMinutes: aiRes.durationMinutes || 60,
+                  autoRecord: true,
+                  autoSummary: true
+                };
+                console.log(`🤖 [Gemini AI Berhasil Ekstraksi] Platform: ${command.platform}, Topik: "${command.topic}", Waktu: ${command.startTime}`);
+              } else if (aiRes.intent === 'OTHER' && (isPrivateChat || isBotMentioned)) {
+                await sock.readMessages([msg.key]);
+                await sock.sendMessage(remoteJid, { text: aiRes.replyMessage }, { quoted: msg });
+                continue;
+              }
+            }
+          } catch (aiErr) {
+            console.warn('⚠️ Gagal memproses fallback Gemini:', aiErr.message);
+          }
+        }
+      }
+
+      // Jika TIDAK ADA perintah meeting yang valid, abaikan sama sekali (tidak perlu dijawab)
       if (!command) {
         continue;
       }
