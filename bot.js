@@ -73,6 +73,14 @@ import {
   markMeetingReminderSent,
   getAvailableTimeSlots
 } from './src/services/schedule.js';
+import {
+  isB15MMeeting,
+  extractB15MActionItems,
+  generateB15MExcelBuffer,
+  generateB15MCSV,
+  formatB15MWhatsAppMessage,
+  getDefaultB15MActionItems
+} from './src/services/b15m.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -173,6 +181,7 @@ function formatHelpMessage(senderName = 'Bapak/Ibu') {
     `📊 *8. LAPORAN KEHADIRAN, FILE PRESENSI & NOTULA*`,
     `Untuk memperoleh rekap kehadiran, file presensi Excel/CSV, dan catatan rapat:`,
     `• _"rekap meeting"_ atau _"!rekap [Meeting ID]"_`,
+    `• _"rekap b15m"_ atau _"notula b15m"_ (Notula & Pelacak Excel Khusus B15M 08:00 WIB)`,
     ``,
     `⏰ *PENGINGAT OTOMATIS:*`,
     `Bot akan otomatis mengirimkan pengingat 15 menit sebelum rapat dimulai ke nomor Anda.`,
@@ -348,7 +357,7 @@ setInterval(() => {
 /**
  * Mengirim laporan rekap meeting (peserta yang bergabung dan total durasi aktual) ke pemesan.
  */
-async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRecipient = null) {
+async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRecipient = null, forceB15M = false) {
   if (!globalSock) return false;
   let meeting = getScheduledMeetingById(meetingId);
   const isGMeet = meeting?.platform === 'GMEET' ||
@@ -358,7 +367,18 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 
   // Jika meeting tidak terdaftar di database lokal (misal dibuat langsung dari web/aplikasi Zoom atau Google Meet)
   if (!meeting) {
-    if (isGMeet) {
+    if (String(meetingId).startsWith('B15M-') || forceB15M) {
+      meeting = {
+        id: String(meetingId),
+        platform: 'ZOOM',
+        topic: 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+        startTime: new Date().toISOString(),
+        duration: 25,
+        requesterPhone: targetRecipient || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE || null,
+        recordRequesterPhone: null,
+        summarySent: false
+      };
+    } else if (isGMeet) {
       try {
         const pastDetails = await getGooglePastMeetingDetails(meetingId);
         if (pastDetails) {
@@ -492,6 +512,93 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
     }
   } catch (aiErr) {
     // AI mungkin masih memproses ringkasan
+  }
+
+  // ---------------------------------------------------------------------------
+  // KHUSUS B15M (Fleet & Operations Sync pukul 08:00 WIB / Judul B15M)
+  // Menghasilkan format laporan khusus Notula & Pelacak B15M + File Excel (.xlsx) resmi
+  // ---------------------------------------------------------------------------
+  const isB15M = forceB15M || isB15MMeeting(meeting, topic, startTime);
+  if (isB15M) {
+    console.log(`📋 [B15M] Memproses notula & pelacak khusus B15M untuk meeting ${meeting.id} (${topic})...`);
+
+    let actionItems = [];
+    try {
+      actionItems = await extractB15MActionItems({
+        topic,
+        summaryOverview: aiSummary?.summaryOverview,
+        summaryDetails: aiSummary?.summaryDetails,
+        nextSteps: aiSummary?.nextSteps
+      });
+    } catch (bErr) {
+      console.warn('Gagal ekstrak item B15M via AI:', bErr.message);
+      actionItems = getDefaultB15MActionItems();
+    }
+
+    const meetingDate = startTime ? new Date(startTime) : new Date();
+    const b15mMsg = formatB15MWhatsAppMessage({
+      meetingDate,
+      timeRange,
+      durationText,
+      facilitator: 'Wajdi Hariyadi',
+      meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+      actionItems,
+      actualParticipants: participants
+    });
+
+    try {
+      await globalSock.sendMessage(targetPhone, { text: b15mMsg });
+      console.log(`✅ Pesan notula WhatsApp B15M berhasil dikirim ke ${targetPhone}!`);
+
+      // Buat file Excel (.xlsx) resmi B15M
+      try {
+        const excelBuffer = await generateB15MExcelBuffer({
+          meetingDate,
+          timeRange,
+          facilitator: 'Wajdi Hariyadi',
+          meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+          actionItems,
+          actualParticipants: participants
+        });
+
+        const utc = meetingDate.getTime() + (meetingDate.getTimezoneOffset() * 60000);
+        const wib = new Date(utc + (3600000 * 7));
+        const fileDateStr = `${wib.getFullYear()}-${String(wib.getMonth() + 1).padStart(2, '0')}-${String(wib.getDate()).padStart(2, '0')}`;
+        const fileName = `Notula_B15M_${fileDateStr}.xlsx`;
+
+        await globalSock.sendMessage(targetPhone, {
+          document: Buffer.from(excelBuffer),
+          mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          fileName: fileName
+        });
+        console.log(`📎 File Excel B15M ${fileName} berhasil dikirim ke ${targetPhone}`);
+      } catch (excelErr) {
+        console.error('Gagal membuat file Excel B15M:', excelErr.message);
+        // Fallback kirim file CSV
+        const csvContent = generateB15MCSV({
+          meetingDate,
+          timeRange,
+          facilitator: 'Wajdi Hariyadi',
+          meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+          actionItems,
+          actualParticipants: participants
+        });
+        await globalSock.sendMessage(targetPhone, {
+          document: Buffer.from(csvContent, 'utf-8'),
+          mimetype: 'text/csv',
+          fileName: `Notula_B15M.csv`
+        });
+      }
+
+      updateMeetingRecording(meeting.id, {
+        summarySent: true,
+        aiSummarySent: true
+      });
+      return true;
+    } catch (bSendErr) {
+      console.error(`Gagal mengirim laporan B15M ke ${targetPhone}:`, bSendErr.message);
+      return false;
+    }
   }
 
   const platformTitle = isGMeet ? 'GOOGLE MEET' : 'ZOOM MEETING';
@@ -634,6 +741,17 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
 
   const defaultTopic = isGMeet ? 'Google Meet' : 'Zoom Meeting';
   const topic = meeting?.topic || aiSummary.summaryTitle || defaultTopic;
+
+  // Jika meeting tergolong B15M, kirim/perbarui notula & file Excel B15M
+  if (isB15MMeeting(meeting, topic, meeting?.startTime)) {
+    console.log(`🤖 [B15M] Notula AI untuk B15M telah siap, menyusun laporan & file Excel khusus...`);
+    const ok = await sendMeetingEndedSummary(meetingId, null, targetPhone, true);
+    if (ok) {
+      updateMeetingRecording(meetingId, { aiSummarySent: true });
+      return;
+    }
+  }
+
   const lines = [
     `🤖 *RINGKASAN & NOTULA RAPAT (${aiProvider.toUpperCase()})*`,
     ``,
@@ -1252,8 +1370,8 @@ async function startBot() {
 
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
-      if (isGroup && !isBotMentioned && !isVoiceNote) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot)/i.test(cleanText) ||
+      if (isGroup && !isBotMentioned && !isVoiceNote && !isQuotedBot) {
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|rekap|notula|notulen)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
                                   Boolean(parseEmptySlotsCommand(cleanText));
         if (!hasMeetingContext) {
@@ -1707,15 +1825,35 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
-      // F. CEK PERINTAH REKAP KEHADIRAN & NOTULA ZOOM AI (!rekap, !summary, rekap meeting)
+      // F. CEK PERINTAH REKAP KEHADIRAN & NOTULA ZOOM AI (!rekap, !summary, rekap meeting, rekap b15m)
       // -----------------------------------------------------------------------
       const summaryCmd = parseSummaryCommand(cleanText);
       if (summaryCmd) {
-        console.log(`\n📊 [Perintah Rekap/Summary Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        console.log(`\n📊 [Perintah Rekap/Summary Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}" (isB15M: ${Boolean(summaryCmd.isB15M)})`);
         try {
           await sock.readMessages([msg.key]);
 
           let targetMeetingId = summaryCmd.meetingId;
+          const isB15M = Boolean(summaryCmd.isB15M);
+
+          if (isB15M && !targetMeetingId) {
+            const activeList = getActiveMeetings();
+            const b15mCandidate = activeList.find(m => isB15MMeeting(m, m.topic, m.startTime));
+            if (b15mCandidate) {
+              targetMeetingId = b15mCandidate.spaceName || b15mCandidate.id;
+            } else {
+              const recent = await getRecentEndedMeetings(5);
+              const b15mRecent = recent.find(m => isB15MMeeting(m, m.topic, m.start_time || m.startTime));
+              if (b15mRecent) {
+                targetMeetingId = b15mRecent.id;
+              }
+            }
+            // Jika tidak ada meeting Zoom terdaftar, gunakan ID virtual B15M hari ini
+            if (!targetMeetingId) {
+              targetMeetingId = `B15M-${new Date().toISOString().slice(0, 10)}`;
+            }
+          }
+
           if (!targetMeetingId) {
             const activeList = getActiveMeetings();
             const lastMeeting = activeList[activeList.length - 1];
@@ -1737,16 +1875,18 @@ async function startBot() {
           }
 
           if (!targetMeetingId) {
-            const replyNoMeeting = `Maaf Pak/Bu, tidak ditemukan meeting yang baru selesai di akun Zoom maupun Google Meet.\nAnda bisa menyertakan Meeting ID atau Kode Meet secara spesifik, contoh:\n*!rekap 87103747663* (Zoom)\n*!rekap pcd-gzmt-gco* (Google Meet)`;
+            const replyNoMeeting = `Maaf Pak/Bu, tidak ditemukan meeting yang baru selesai di akun Zoom maupun Google Meet.\nAnda bisa menyertakan Meeting ID atau Kode Meet secara spesifik, contoh:\n*!rekap 87103747663* (Zoom)\n*!rekap pcd-gzmt-gco* (Google Meet)\n*!rekap b15m* (Pelacak Rapat B15M Seven Oceans)`;
             await sock.sendMessage(remoteJid, { text: replyNoMeeting }, { quoted: msg });
             continue;
           }
 
-          await sock.sendMessage(remoteJid, {
-            text: `⏳ Sedang mengumpulkan data kehadiran dan notula AI untuk meeting *${targetMeetingId}*, mohon tunggu sebentar...`
-          }, { quoted: msg });
+          const infoWait = isB15M
+            ? `⏳ Sedang menyusun Notula Rapat & Pelacak Tindak Lanjut B15M beserta file Excel, mohon tunggu sebentar...`
+            : `⏳ Sedang mengumpulkan data kehadiran dan notula AI untuk meeting *${targetMeetingId}*, mohon tunggu sebentar...`;
 
-          const ok = await sendMeetingEndedSummary(targetMeetingId, null, remoteJid);
+          await sock.sendMessage(remoteJid, { text: infoWait }, { quoted: msg });
+
+          const ok = await sendMeetingEndedSummary(targetMeetingId, null, remoteJid, isB15M);
           if (!ok) {
             const failMsg = `⚠️ Maaf, belum dapat mengambil rekap untuk meeting *${targetMeetingId}*.\nPastikan meeting tersebut sudah berakhir di server Zoom atau Google Meet.`;
             await sock.sendMessage(remoteJid, { text: failMsg }, { quoted: msg });

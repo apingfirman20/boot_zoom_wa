@@ -637,12 +637,15 @@ export function parseSummaryCommand(messageText) {
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  const isPrefix = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower);
-  const isNatural = /^(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|gmeet|google\s*meet|hasil)?\b/i.test(lower) ||
-                    /^(?:rekap(?:an)?|summary|notula|ringkasan)$/i.test(lower) ||
-                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|ringkasan)\s+(?:meeting|rapat|zoom|gmeet|google\s*meet)\b/i.test(lower);
+  const isB15M = /\bb15m\b|b 15 m|b-15m|b 15m/i.test(lower);
+  const isPrefix = /^[!/#](?:rekap|summary|notula|notulen|ringkasan)\b/i.test(lower);
+  const isNatural = /^(?:rekap(?:an)?|summary|notula|notulen|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|gmeet|google\s*meet|hasil|b15m|b\s*15m)?\b/i.test(lower) ||
+                    /^(?:rekap(?:an)?|summary|notula|notulen|ringkasan)$/i.test(lower) ||
+                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|notulen|ringkasan)\s+(?:meeting|rapat|zoom|gmeet|google\s*meet|b15m|b\s*15m)\b/i.test(lower) ||
+                    /^(?:buatkan\s+|kirimkan\s+)?(?:rekap|notula|notulen|excel|laporan)\s+b15m\b/i.test(lower) ||
+                    /^b15m$/i.test(lower);
 
-  if (!isPrefix && !isNatural) {
+  if (!isPrefix && !isNatural && !isB15M) {
     return null;
   }
 
@@ -653,7 +656,8 @@ export function parseSummaryCommand(messageText) {
 
   return {
     isSummaryCommand: true,
-    meetingId
+    meetingId,
+    isB15M
   };
 }
 
