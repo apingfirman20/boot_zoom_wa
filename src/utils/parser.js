@@ -80,7 +80,10 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const isSlot = /(?:kapan|cek|lihat|daftar|ada|info)?\s*(?:jadwal|jam|slot|waktu)\s*(?:yang\s+)?kosong/i.test(lower) ||
                  /(?:jam|waktu)\s+berapa\s+(?:yang\s+)?kosong/i.test(lower) ||
                  /(?:kapan\s+(?:zoom|meet|meeting)\s+kosong|slot\s+kosong|!kosong|!slots)/i.test(lower);
-  if (isCancel || isList || isEdit || isHelp || isSummary || isEnd || isSlot) {
+  const isFreeZoom = /(?:zoom|link\s+zoom)\s+(?:gratis(?:an)?|cadangan|free|pmi|personal)/i.test(lower) ||
+                     /(?:buat(?:kan)?|bikin|minta|bagi|kirim(?:kan)?)\s+(?:link\s+)?zoom\s+(?:gratis(?:an)?|cadangan|free)/i.test(lower) ||
+                     /^[!/#](?:zoomgratis|zoomfree|zoomcadangan)\b/i.test(lower);
+  if (isCancel || isList || isEdit || isHelp || isSummary || isEnd || isSlot || isFreeZoom) {
     return null;
   }
 
@@ -744,6 +747,36 @@ export function parseEmptySlotsCommand(messageText) {
   return {
     isEmptySlotsCommand: true,
     dayOffset
+  };
+}
+
+/**
+ * Parsing perintah permintaan link Zoom Cadangan / Gratisan.
+ * Contoh:
+ * - "zoom gratisan", "buatkan zoom gratisan", "zoom gratis", "minta zoom gratisan"
+ * - "zoom cadangan", "link zoom cadangan", "!zoom gratis", "!zoom cadangan"
+ * 
+ * @param {string} messageText
+ * @returns {{ isFreeZoom: boolean, topic?: string }|null}
+ */
+export function parseFreeZoomCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  const isFreeZoom = /(?:zoom|link\s+zoom)\s+(?:gratis(?:an)?|cadangan|free|pmi|personal)/i.test(lower) ||
+                     /(?:buat(?:kan)?|bikin|minta|bagi|kirim(?:kan)?)\s+(?:link\s+)?zoom\s+(?:gratis(?:an)?|cadangan|free)/i.test(lower) ||
+                     /^[!/#](?:zoomgratis|zoomfree|zoomcadangan)\b/i.test(lower);
+
+  if (!isFreeZoom) return null;
+
+  // Ekstrak topik jika ada (misal: "zoom gratisan topik koordinasi tim")
+  const topicMatch = text.match(/(?:topik|agenda|judul|untuk)\s+([^\n\r]+)/i);
+  const topic = topicMatch ? topicMatch[1].trim() : 'Meeting Cadangan (Zoom Gratis)';
+
+  return {
+    isFreeZoom: true,
+    topic
   };
 }
 

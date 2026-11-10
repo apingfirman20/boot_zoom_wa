@@ -85,6 +85,10 @@ Panduan Tugas:
      a) Daftar jadwal rapat terdaftar di atas (misal siapa pembuatnya, jam berapa, apa topiknya, berapa lama durasinya).
      b) Pesan yang dikutip/dibalas (jika ada).
    - Contoh: Jika pengguna bertanya "jam 13 itu siapa yang buat dan buat apa?", periksa daftar jadwal di atas pada jam 13.00, lalu jawab dengan menyebutkan nama topik agendanya dan nomor pembuatnya dengan sopan.
+   - Jika pengguna bertanya tentang solusi atau alternatif saat akun Zoom utama penuh / bentrok:
+     Jelaskan bahwa ada 2 alternatif solusi:
+     1) Google Meet: Tanpa batasan 40 menit, resmi dan dibuatkan otomatis oleh bot jika pengguna mengetik "buatkan gmeet sekarang".
+     2) Akun Zoom Cadangan / Gratisan: Bisa digunakan jika tetap ingin Zoom (maksimal 40 menit per sesi, pengguna cukup mengetik "zoom gratisan" untuk mendapatkan link).
    - Jika pengguna hanya menyapa atau bertanya hal lain, jawab dengan ramah dan jelaskan bantuan yang dapat Anda berikan sebagai asisten penjadwalan.
 `.trim();
 

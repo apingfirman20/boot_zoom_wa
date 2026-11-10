@@ -18,7 +18,8 @@ import {
   parseHelpCommand,
   parseSummaryCommand,
   parseEndMeetingCommand,
-  parseEmptySlotsCommand
+  parseEmptySlotsCommand,
+  parseFreeZoomCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -183,10 +184,56 @@ function formatHelpMessage(senderName = 'Bapak/Ibu') {
     `• _"rekap meeting"_ atau _"!rekap [Meeting ID]"_`,
     `• _"rekap b15m"_ atau _"notula b15m"_ (Notula & Pelacak Excel Khusus B15M 08:00 WIB)`,
     ``,
+    `🆓 *9. ZOOM CADANGAN / GRATISAN*`,
+    `Jika akun Zoom utama sedang penuh/terpakai:`,
+    `• _"zoom gratisan"_ atau _"zoom cadangan"_ (Tautan Zoom cadangan 40 menit)`,
+    `• _"buatkan gmeet sekarang"_ (Alternatif Google Meet resmi tanpa batasan waktu)`,
+    ``,
     `⏰ *PENGINGAT OTOMATIS:*`,
     `Bot akan otomatis mengirimkan pengingat 15 menit sebelum rapat dimulai ke nomor Anda.`,
     ``,
     `💡 _Catatan: Di dalam grup WhatsApp, silakan tag/mention akun ini untuk menyampaikan instruksi._`
+  ].join('\n');
+}
+
+/**
+ * Mengambil detail tautan dan kredensial Zoom Cadangan / Versi Gratis.
+ */
+function getFreeZoomDetails() {
+  return {
+    joinUrl: process.env.ZOOM_FREE_JOIN_URL || 'https://us05web.zoom.us/j/81401797640?pwd=4RP5ECbwktJZrYkWJ5ERMhsR6ZR5Bw.1',
+    meetingId: process.env.ZOOM_FREE_MEETING_ID || '814 0179 7640',
+    passcode: process.env.ZOOM_FREE_PASSCODE || 'T7RsZm'
+  };
+}
+
+/**
+ * Menyusun pesan solusi cerdas ketika akun Zoom utama sedang dipakai (bentrok).
+ * Memberikan 2 alternatif: 1) Google Meet (bebas durasi), 2) Zoom Cadangan / Gratisan (40 menit).
+ */
+function formatConflictSuggestionMessage(conflictingMeeting) {
+  const confTime = formatMeetingTime(conflictingMeeting.startTime);
+  const freeZoom = getFreeZoomDetails();
+
+  return [
+    `Mohon maaf Bapak/Ibu, pada waktu tersebut (${confTime}) akun Zoom utama sedang dipergunakan untuk agenda *${conflictingMeeting.topic}*.`,
+    ``,
+    `💡 *Disarankan 2 Alternatif Solusi Rapat:*`,
+    ``,
+    `1️⃣ *Google Meet (Rekomendasi Tanpa Batas Waktu & Otomatis)*`,
+    `   • Resmi dibuatkan langsung oleh bot`,
+    `   • Durasi bebas tanpa batas 40 menit, kapasitas hingga 100 orang`,
+    `   👉 *Balas pesan ini:* _"buatkan gmeet sekarang"_`,
+    ``,
+    `2️⃣ *Zoom Cadangan / Gratisan (Maks. 40 Menit)*`,
+    `   Jika Anda tetap ingin menggunakan aplikasi Zoom, silakan gunakan ruang rapat Zoom cadangan berikut:`,
+    `   🔗 *Tautan:* ${freeZoom.joinUrl}`,
+    `   🆔 *Meeting ID:* ${freeZoom.meetingId}`,
+    `   🔑 *Passcode:* ${freeZoom.passcode}`,
+    `   ⏳ _Catatan: Durasi maksimal 40 menit per sesi (versi gratis)._`,
+    ``,
+    `3️⃣ *Jadwalkan di Jam Kosong:*`,
+    `   Ketik _"kapan zoom kosong hari ini?"_ untuk mengecek slot akun Zoom utama yang masih bebas.`
   ].join('\n');
 }
 
@@ -1426,9 +1473,10 @@ async function startBot() {
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
       if (isGroup && !isBotMentioned && !isVoiceNote && !isQuotedBot) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|rekap|notula|notulen)/i.test(cleanText) ||
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|rekap|notula|notulen|gratis|cadangan|free)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
-                                  Boolean(parseEmptySlotsCommand(cleanText));
+                                  Boolean(parseEmptySlotsCommand(cleanText)) ||
+                                  Boolean(parseFreeZoomCommand(cleanText));
         if (!hasMeetingContext) {
           continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
         }
@@ -1583,8 +1631,7 @@ async function startBot() {
           if (!isGMeet && editCmd.newStartTime && editCmd.newStartTime !== matchedMeeting.startTime) {
             const { hasConflict, conflictingMeeting } = await checkScheduleConflict(newStartTime, duration, matchedMeeting.id);
             if (hasConflict && conflictingMeeting) {
-              const confTime = formatMeetingTime(conflictingMeeting.startTime);
-              const replyConflict = `Mohon maaf Pak/Bu, tidak dapat mengubah jadwal ke jam tersebut karena di jam segitu (${confTime}) sudah ada meeting tim *${conflictingMeeting.topic}*. Mohon pilih jam lain ya.`;
+              const replyConflict = formatConflictSuggestionMessage(conflictingMeeting);
               await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
               continue;
             }
@@ -1953,6 +2000,38 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
+      // F. CEK PERINTAH ZOOM CADANGAN / GRATISAN ("zoom gratisan", "zoom cadangan")
+      // -----------------------------------------------------------------------
+      const freeZoomCmd = parseFreeZoomCommand(cleanText);
+      if (freeZoomCmd) {
+        console.log(`\n🆓 [Permintaan Zoom Cadangan/Gratisan] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+          const freeZoom = getFreeZoomDetails();
+          const replyFree = [
+            `Yth. Bapak/Ibu,`,
+            `Berikut informasi tautan Zoom Cadangan (Versi Gratis):`,
+            ``,
+            `📌 *Topik Agenda:* ${freeZoomCmd.topic || 'Meeting Cadangan'}`,
+            `🔗 *Tautan Zoom:*`,
+            `${freeZoom.joinUrl}`,
+            `🆔 *Meeting ID:* ${freeZoom.meetingId}`,
+            `🔑 *Passcode:* ${freeZoom.passcode}`,
+            `⏳ *Durasi:* Maksimal 40 Menit per sesi (Akun Gratis)`,
+            `🚪 *Akses Masuk:* Langsung Masuk (Tanpa menunggu persetujuan Host)`,
+            ``,
+            `💡 _Alternatif: Jika butuh rapat lebih dari 40 menit tanpa terputus, gunakan Google Meet (ketik: "buatkan gmeet sekarang")._`
+          ].join('\n');
+
+          await sock.sendMessage(remoteJid, { text: replyFree }, { quoted: msg });
+          console.log(`✅ Tautan Zoom cadangan berhasil dikirim ke ${remoteJid}`);
+        } catch (freeErr) {
+          console.error('❌ Gagal mengirim link Zoom cadangan:', freeErr.message);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
       // F. CEK PERINTAH BANTUAN / PANDUAN (!info, !help, Mention Grup, Sapaan PC)
       // -----------------------------------------------------------------------
       const helpCmd = parseHelpCommand(cleanText, { isGroup, isBotMentioned, isPrivateChat, isQuotedBot });
@@ -2031,11 +2110,9 @@ async function startBot() {
         if (command.platform === 'ZOOM') {
           const { hasConflict, conflictingMeeting } = await checkScheduleConflict(command.startTime, command.durationMinutes, null, 'ZOOM');
           if (hasConflict && conflictingMeeting) {
-            const confTime = formatMeetingTime(conflictingMeeting.startTime);
-            const replyConflict = `Mohon maaf Bapak/Ibu, pada waktu tersebut (${confTime}) akun Zoom sedang dipergunakan untuk agenda *${conflictingMeeting.topic}*.\n\n` +
-              `💡 _Alternatif Solusi: Anda dapat menggunakan Google Meet (contoh: "buatkan gmeet jam 10") atau menjadwalkan Zoom pada waktu lain agar tidak bertabrakan._`;
+            const replyConflict = formatConflictSuggestionMessage(conflictingMeeting);
             await sock.sendMessage(remoteJid, { text: replyConflict }, { quoted: msg });
-            console.log(`⚠️ Ditolak: Jadwal Zoom bentrok dengan tim ${conflictingMeeting.topic} (${confTime})`);
+            console.log(`⚠️ Ditolak: Jadwal Zoom bentrok dengan tim ${conflictingMeeting.topic} (${conflictingMeeting.startTime})`);
             continue;
           }
         }
