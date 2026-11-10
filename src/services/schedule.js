@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { checkMeetingExists, getUpcomingZoomMeetings } from './zoom.js';
-import { parseToDate } from '../utils/datetime.js';
+import { parseToDate, getDatePartsInTimezone, getNowInTimezone } from '../utils/datetime.js';
 
 const STORAGE_DIR = process.env.STORAGE_DIR || '.';
 const DATA_DIR = path.join(STORAGE_DIR, 'data');
@@ -72,6 +72,7 @@ export function saveScheduledMeeting(meeting) {
       autoRecord: Boolean(meeting.autoRecord),
       requesterPhone: meeting.requesterPhone || '',
       recordRequesterPhone: meeting.recordRequesterPhone || meeting.requesterPhone || '',
+      reminderSent: Boolean(meeting.reminderSent || false),
       recordingSent: false,
       summarySent: false,
       aiSummarySent: false,
@@ -477,5 +478,127 @@ export async function getNearbyUpcomingMeeting(startTimeISO, durationMinutes = N
 
   return null;
 }
+
+/**
+ * Mengambil daftar meeting aktif yang akan dimulai dalam rentang leadMinutes (misal 15 menit lagi)
+ * dan belum dikirimkan notifikasi pengingatnya.
+ * 
+ * @param {number} leadMinutes 
+ * @returns {Array<object>}
+ */
+export function getMeetingsPendingReminder(leadMinutes = 15) {
+  const meetings = getActiveMeetings();
+  const now = Date.now();
+  const leadMs = leadMinutes * 60 * 1000;
+
+  return meetings.filter(m => {
+    if (m.reminderSent) return false;
+    const start = parseToDate(m.startTime).getTime();
+    if (isNaN(start)) return false;
+    const diff = start - now;
+    // Berada dalam rentang waktu 0 sampai leadMinutes sebelum meeting mulai
+    return diff > 0 && diff <= leadMs;
+  });
+}
+
+/**
+ * Menandai meeting bahwa pengingat H-15 menit sudah terkirim.
+ * @param {string|number} meetingId 
+ */
+export function markMeetingReminderSent(meetingId) {
+  return updateMeetingRecording(meetingId, { reminderSent: true });
+}
+
+/**
+ * Menganalisis ketersediaan slot waktu (jam kosong) pada hari tertentu untuk akun Zoom.
+ * 
+ * @param {number} dayOffset - 0 untuk hari ini, 1 untuk besok, 2 untuk lusa
+ * @param {string} timezone 
+ * @returns {{ dayOffset: number, targetDateStr: string, booked: Array<object>, free: Array<object> }}
+ */
+export function getAvailableTimeSlots(dayOffset = 0, timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta') {
+  const nowParts = getNowInTimezone(timezone);
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + dayOffset);
+  const targetParts = getDatePartsInTimezone(targetDate, timezone);
+
+  const meetings = getActiveMeetings();
+
+  // Filter jadwal Zoom pada tanggal target
+  const dayMeetings = meetings.filter(m => {
+    if (m.platform === 'GMEET') return false; // GMeet tidak saling membatasi 1 host
+    const parts = getDatePartsInTimezone(m.startTime, timezone);
+    return parts.year === targetParts.year &&
+           parts.month === targetParts.month &&
+           parts.day === targetParts.day;
+  }).map(m => {
+    const parts = getDatePartsInTimezone(m.startTime, timezone);
+    const startMinutes = parts.hour * 60 + parts.minute;
+    const duration = Number(m.duration) || 60;
+    const endMinutes = startMinutes + duration;
+    return {
+      id: m.id,
+      topic: m.topic || 'Zoom Meeting',
+      startMinutes,
+      endMinutes,
+      formattedStart: `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`,
+      formattedEnd: `${String(Math.floor(endMinutes / 60)).padStart(2, '0')}:${String(endMinutes % 60).padStart(2, '0')}`
+    };
+  }).sort((a, b) => a.startMinutes - b.startMinutes);
+
+  // Batas jam operasional yang lazim untuk penjadwalan: 08:00 (480 menit) s.d. 21:00 (1260 menit)
+  const dayStartMin = 8 * 60;
+  const dayEndMin = 21 * 60;
+
+  let pointer = dayStartMin;
+  if (dayOffset === 0) {
+    const currentMin = nowParts.hour * 60 + nowParts.minute;
+    if (currentMin > pointer) {
+      // Bulatkan ke kelipatan 15 menit terdekat ke atas
+      pointer = Math.ceil(currentMin / 15) * 15;
+    }
+  }
+
+  const freeIntervals = [];
+
+  for (const m of dayMeetings) {
+    if (m.endMinutes <= pointer) continue;
+    if (m.startMinutes > pointer) {
+      const slotEnd = Math.min(m.startMinutes, dayEndMin);
+      if (slotEnd > pointer) {
+        freeIntervals.push({
+          startMinutes: pointer,
+          endMinutes: slotEnd,
+          formattedStart: `${String(Math.floor(pointer / 60)).padStart(2, '0')}:${String(pointer % 60).padStart(2, '0')}`,
+          formattedEnd: `${String(Math.floor(slotEnd / 60)).padStart(2, '0')}:${String(slotEnd % 60).padStart(2, '0')}`
+        });
+      }
+    }
+    pointer = Math.max(pointer, m.endMinutes);
+  }
+
+  if (pointer < dayEndMin) {
+    freeIntervals.push({
+      startMinutes: pointer,
+      endMinutes: dayEndMin,
+      formattedStart: `${String(Math.floor(pointer / 60)).padStart(2, '0')}:${String(pointer % 60).padStart(2, '0')}`,
+      formattedEnd: `${String(Math.floor(dayEndMin / 60)).padStart(2, '0')}:${String(dayEndMin % 60).padStart(2, '0')}`
+    });
+  }
+
+  const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+  const monthNames = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  const dObj = new Date(targetParts.year, targetParts.month - 1, targetParts.day);
+  const dayName = dayNames[dObj.getDay()];
+  const formattedDate = `${dayName}, ${targetParts.day} ${monthNames[targetParts.month]} ${targetParts.year}`;
+
+  return {
+    dayOffset,
+    formattedDate,
+    booked: dayMeetings,
+    free: freeIntervals
+  };
+}
+
 
 

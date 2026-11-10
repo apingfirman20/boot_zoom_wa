@@ -77,7 +77,10 @@ export function parseMeetingCommand(messageText, defaultTz = process.env.DEFAULT
   const isHelp = /^[!/#](?:info|help|bantuan|menu|panduan|petunjuk)\b/i.test(lower) || /^(?:info|help|menu|panduan|petunjuk|bantuan|cara\s+pakai|halo|hai|hi|p)$/i.test(lower);
   const isSummary = /^[!/#](?:rekap|summary|notula|ringkasan)\b/i.test(lower) || /^(?:rekap|summary|notula|ringkasan)/i.test(lower);
   const isEnd = /(?:end\s+boy|(?:end|akhiri|stop|hentikan|selesaikan|tutup)\s+(?:meeting|zoom|gmeet|meet|miting))/i.test(lower);
-  if (isCancel || isList || isEdit || isHelp || isSummary || isEnd) {
+  const isSlot = /(?:kapan|cek|lihat|daftar|ada|info)?\s*(?:jadwal|jam|slot|waktu)\s*(?:yang\s+)?kosong/i.test(lower) ||
+                 /(?:jam|waktu)\s+berapa\s+(?:yang\s+)?kosong/i.test(lower) ||
+                 /(?:kapan\s+(?:zoom|meet|meeting)\s+kosong|slot\s+kosong|!kosong|!slots)/i.test(lower);
+  if (isCancel || isList || isEdit || isHelp || isSummary || isEnd || isSlot) {
     return null;
   }
 
@@ -691,3 +694,35 @@ export function parseEndMeetingCommand(messageText) {
     meetingId
   };
 }
+
+/**
+ * Parsing perintah pengecekan slot waktu / jam kosong (misal "kapan zoom kosong hari ini?", "cek jam kosong", "!kosong")
+ * 
+ * @param {string} messageText
+ * @returns {{ isEmptySlotsCommand: boolean, dayOffset: number }|null}
+ */
+export function parseEmptySlotsCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  const isSlotQuery = /(?:kapan|cek|lihat|daftar|ada|info)?\s*(?:jadwal|jam|slot|waktu)\s*(?:yang\s+)?kosong/i.test(lower) ||
+                      /(?:jam|waktu)\s+berapa\s+(?:yang\s+)?kosong/i.test(lower) ||
+                      /(?:kapan\s+(?:zoom|meet|meeting)\s+kosong|slot\s+kosong|!kosong|!slots)/i.test(lower);
+
+  if (!isSlotQuery) return null;
+
+  let dayOffset = 0;
+  if (/besok/i.test(lower)) {
+    dayOffset = 1;
+  } else if (/lusa/i.test(lower)) {
+    dayOffset = 2;
+  }
+
+  return {
+    isEmptySlotsCommand: true,
+    dayOffset
+  };
+}
+

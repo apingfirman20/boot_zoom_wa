@@ -4,7 +4,8 @@ import crypto from 'crypto';
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  downloadMediaMessage
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
@@ -16,7 +17,8 @@ import {
   parseEditCommand,
   parseHelpCommand,
   parseSummaryCommand,
-  parseEndMeetingCommand
+  parseEndMeetingCommand,
+  parseEmptySlotsCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -42,6 +44,7 @@ import {
 } from './src/services/gmeet.js';
 import {
   extractMeetingDetails,
+  extractMeetingFromAudio,
   isGeminiEnabled
 } from './src/services/gemini.js';
 import {
@@ -64,7 +67,10 @@ import {
   getMeetingsPendingRecording,
   getMeetingsPendingSummary,
   getMeetingsPendingAiSummary,
-  getScheduledMeetingById
+  getScheduledMeetingById,
+  getMeetingsPendingReminder,
+  markMeetingReminderSent,
+  getAvailableTimeSlots
 } from './src/services/schedule.js';
 
 import fs from 'fs';
@@ -125,44 +131,92 @@ function formatHelpMessage(senderName = 'Bapak/Ibu') {
     `Berikut adalah panduan format instruksi yang dapat Anda pergunakan:`,
     ``,
     `📅 *1. PEMBUATAN JADWAL RAPAT*`,
-    `Anda dapat menyampaikan permohonan jadwal secara langsung dengan menyebutkan platform, waktu, dan agenda:`,
+    `Anda dapat menyampaikan permohonan jadwal via teks atau *Pesan Suara (Voice Note)*:`,
     `• _"buatkan zoom jam 14.00 untuk koordinasi tim finance"_`,
     `• _"buat zoom besok jam 10 pagi topik review bulanan rekam"_ *(Perekaman Cloud)*`,
     `• _"buatkan google meet jam 10 untuk TIM SOTS"_`,
     `• _"minta link meet sekarang untuk rapat direksi"_`,
+    `• 🎙️ _Cukup kirimkan Voice Note, bot akan mendengarkan & menjadwalkan otomatis!_`,
     ``,
-    `📋 *2. PEMERIKSAAN JADWAL TERDAFTAR*`,
+    `🔍 *2. PENGECEKAN SLOT WAKTU KOSONG*`,
+    `Untuk mengetahui jam berapa saja akun Zoom siap digunakan:`,
+    `• _"kapan zoom kosong hari ini?"_`,
+    `• _"cek jam kosong"_ atau _"jadwal kosong besok"_`,
+    ``,
+    `📋 *3. PEMERIKSAAN JADWAL TERDAFTAR*`,
     `Untuk meninjau seluruh agenda rapat yang aktif:`,
     `• _"cek jadwal zoom"_ atau _"cek jadwal meeting"_`,
     `• _"!jadwal"_ atau _"!list"_`,
     ``,
-    `✏️ *3. PERUBAHAN JADWAL (RESCHEDULE)*`,
+    `✏️ *4. PERUBAHAN JADWAL (RESCHEDULE)*`,
     `Untuk memperbarui waktu atau topik agenda:`,
     `• _"ubah zoom jam 14.00 jadi jam 16.00"_`,
     `• _"ganti jadwal zoom tim finance ke besok jam 10 pagi"_`,
     `• _"reschedule zoom [Meeting ID] ke jam 15.00"_`,
     ``,
-    `🗑️ *4. PEMBATALAN RAPAT*`,
-    `Untuk membatalkan agenda rapat tertentu:`,
+    `🗑️ *5. PEMBATALAN RAPAT*`,
+    `Untuk membatalkan agenda rapat tertentu (khusus pembuat rapat / Admin):`,
     `• _"batalkan zoom jam 14.00"_`,
     `• _"hapus zoom tim finance"_`,
     `• _"hapus zoom [Meeting ID]"_`,
     ``,
-    `📹 *5. PEREKAMAN RAPAT LANGSUNG (LIVE)*`,
+    `📹 *6. PEREKAMAN RAPAT LANGSUNG (LIVE)*`,
     `Untuk merekam rapat yang sedang berlangsung:`,
     `• _"rekam"_ atau _"rekam zoom sekarang"_`,
     ``,
-    `🛑 *6. MENGAKHIRI RAPAT BERLANGSUNG*`,
+    `🛑 *7. MENGAKHIRI RAPAT BERLANGSUNG*`,
     `Untuk menyelesaikan dan menutup rapat yang sedang berjalan:`,
     `• _"akhiri meeting"_ atau _"stop zoom"_`,
     `• _"end boy"_`,
     ``,
-    `📊 *7. LAPORAN KEHADIRAN & NOTULA RAPAT*`,
-    `Untuk memperoleh rekap kehadiran dan catatan rapat:`,
+    `📊 *8. LAPORAN KEHADIRAN, FILE PRESENSI & NOTULA*`,
+    `Untuk memperoleh rekap kehadiran, file presensi Excel/CSV, dan catatan rapat:`,
     `• _"rekap meeting"_ atau _"!rekap [Meeting ID]"_`,
+    ``,
+    `⏰ *PENGINGAT OTOMATIS:*`,
+    `Bot akan otomatis mengirimkan pengingat 15 menit sebelum rapat dimulai ke nomor Anda.`,
     ``,
     `💡 _Catatan: Di dalam grup WhatsApp, silakan tag/mention akun ini untuk menyampaikan instruksi._`
   ].join('\n');
+}
+
+/**
+ * Memeriksa apakah pengirim memiliki hak akses untuk perintah sensitif (batal/hapus meeting atau end boy).
+ * Diperbolehkan jika:
+ * 1. Nomor pengirim terdaftar di variabel ADMIN_PHONES (atau ADMIN_NUMBERS).
+ * 2. ATAU nomor pengirim adalah orang yang memesan meeting tersebut.
+ * 3. ATAU variabel ADMIN_PHONES belum diatur (default terbuka untuk kemudahan).
+ */
+function isAuthorizedSender(senderJid, targetMeeting = null) {
+  if (!senderJid) return false;
+  const senderNumber = String(senderJid).split('@')[0].replace(/\D/g, '');
+
+  const adminEnv = process.env.ADMIN_PHONES || process.env.ADMIN_PHONE || process.env.ADMIN_NUMBERS || '';
+  const adminList = adminEnv.split(',').map(n => n.trim().replace(/\D/g, '')).filter(Boolean);
+
+  // Jika pengirim ada di daftar admin, selalu diizinkan
+  if (adminList.length > 0 && adminList.some(a => senderNumber.endsWith(a) || a.endsWith(senderNumber))) {
+    return true;
+  }
+
+  // Jika pengirim adalah pemesan meeting tersebut
+  if (targetMeeting) {
+    const requesterNumber = String(targetMeeting.requesterPhone || '').split('@')[0].replace(/\D/g, '');
+    const recordRequester = String(targetMeeting.recordRequesterPhone || '').split('@')[0].replace(/\D/g, '');
+    if (requesterNumber && (senderNumber.endsWith(requesterNumber) || requesterNumber.endsWith(senderNumber))) {
+      return true;
+    }
+    if (recordRequester && (senderNumber.endsWith(recordRequester) || recordRequester.endsWith(senderNumber))) {
+      return true;
+    }
+  }
+
+  // Jika daftar admin tidak diset di .env, izinkan (default fleksibel)
+  if (adminList.length === 0) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -242,6 +296,53 @@ async function pollPendingRecordings() {
 setInterval(() => {
   pollPendingRecordings().catch(() => {});
 }, 2 * 60 * 1000);
+
+/**
+ * Pengecekan berkala dan pengiriman pengingat H-15 menit sebelum rapat dimulai.
+ */
+async function pollPendingReminders() {
+  if (!globalSock) return;
+  const pending = getMeetingsPendingReminder(15);
+  if (pending.length === 0) return;
+
+  for (const m of pending) {
+    const targetPhone = m.requesterPhone;
+    if (!targetPhone) continue;
+
+    const isGMeet = m.platform === 'GMEET';
+    const platformName = isGMeet ? 'Google Meet' : 'Zoom';
+    const formattedTime = formatMeetingTime(m.startTime);
+
+    const reminderMsg = [
+      `⏰ *PENGINGAT: 15 MENIT MENUJU RAPAT*`,
+      ``,
+      `Yth. Bapak/Ibu,`,
+      `Agenda pertemuan berikut akan segera dimulai dalam waktu 15 menit:`,
+      ``,
+      `📌 *Topik Agenda:* ${m.topic}`,
+      `🗓️ *Waktu Pelaksanaan:* ${formattedTime}`,
+      `🔗 *Tautan ${platformName}:*`,
+      `${m.joinUrl}`,
+      (!isGMeet && m.id) ? `🆔 *Meeting ID:* ${m.id}` : null,
+      (!isGMeet && m.passcode) ? `🔑 *Passcode:* ${m.passcode}` : null,
+      ``,
+      `Mohon seluruh peserta dapat bersiap-siap memasuki ruang rapat. Terima kasih.`
+    ].filter(Boolean).join('\n');
+
+    try {
+      await globalSock.sendMessage(targetPhone, { text: reminderMsg });
+      console.log(`⏰ [Pengingat H-15 Terkirim] Meeting ID ${m.id} (${m.topic}) ke ${targetPhone}`);
+      markMeetingReminderSent(m.id);
+    } catch (err) {
+      console.error(`Gagal mengirim pengingat H-15 meeting ${m.id} ke ${targetPhone}:`, err.message);
+    }
+  }
+}
+
+// Cek pengingat setiap 45 detik
+setInterval(() => {
+  pollPendingReminders().catch(() => {});
+}, 45 * 1000);
 
 /**
  * Mengirim laporan rekap meeting (peserta yang bergabung dan total durasi aktual) ke pemesan.
@@ -446,6 +547,38 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
   try {
     await globalSock.sendMessage(targetPhone, { text: summaryMsg.join('\n') });
     console.log(`✅ Laporan rekap peserta meeting ID ${meeting.id} (${participants.length} peserta) berhasil dikirim ke ${targetPhone}!`);
+
+    // Lampirkan file presensi CSV jika terdapat data peserta yang bergabung
+    if (participants && participants.length > 0) {
+      try {
+        const csvRows = [
+          ['No', 'Nama Peserta', 'Email', 'Waktu Masuk', 'Waktu Keluar', 'Durasi Hadir']
+        ];
+        participants.forEach((p, idx) => {
+          csvRows.push([
+            idx + 1,
+            `"${(p.name || '').replace(/"/g, '""')}"`,
+            `"${(p.email || '-').replace(/"/g, '""')}"`,
+            `"${(p.joinTime || '-').replace(/"/g, '""')}"`,
+            `"${(p.leaveTime || '-').replace(/"/g, '""')}"`,
+            `"${(p.durationText || (p.durationMinutes ? `${p.durationMinutes} Menit` : '-')).replace(/"/g, '""')}"`
+          ]);
+        });
+        const csvContent = '\uFEFF' + csvRows.map(r => r.join(',')).join('\r\n');
+        const safeTopic = (topic || 'Meeting').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 30);
+        const fileName = `Presensi_${safeTopic}_${meeting.id}.csv`;
+
+        await globalSock.sendMessage(targetPhone, {
+          document: Buffer.from(csvContent, 'utf-8'),
+          mimetype: 'text/csv',
+          fileName: fileName
+        });
+        console.log(`📎 File presensi ${fileName} berhasil dikirim ke ${targetPhone}`);
+      } catch (docErr) {
+        console.warn(`Gagal melampirkan file dokumen presensi:`, docErr.message);
+      }
+    }
+
     updateMeetingRecording(meeting.id, {
       summarySent: true,
       aiSummarySent: Boolean(aiSummary)
@@ -1034,14 +1167,15 @@ async function startBot() {
       // Abaikan update status atau broadcast
       if (msg.key.remoteJid === 'status@broadcast') continue;
 
-      // Ambil teks pesan
-      const messageText =
+      // Ambil teks pesan atau deteksi pesan audio/Voice Note
+      const isAudio = Boolean(msg.message?.audioMessage);
+      let messageText =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         '';
 
-      if (!messageText || messageText.trim() === '') continue;
+      if (!messageText && !isAudio) continue;
 
       const remoteJid = msg.key.remoteJid;
       const senderName = msg.pushName || 'Teman';
@@ -1050,24 +1184,86 @@ async function startBot() {
       const isPrivateChat = !isGroup;
 
       // Cek apakah bot di-tag / di-mention di grup
-      const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+      const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.audioMessage?.contextInfo;
       const mentionedJid = contextInfo?.mentionedJid || [];
       const botNumber = sock.user?.id ? sock.user.id.split(':')[0] : '';
       const isBotMentioned = Boolean(botNumber && mentionedJid.some(jid => jid.startsWith(botNumber)));
 
+      // Cegah looping jika pesan berasal dari akun bot itu sendiri
+      if (isFromMe) continue;
+
+      let audioMeetingCommand = null;
+
+      // Pemrosesan Voice Note (VN) jika pesan berupa audio
+      if (isAudio) {
+        const isQuotedBot = Boolean(botNumber && contextInfo?.participant?.startsWith(botNumber));
+        const allowAudio = isPrivateChat || isBotMentioned || isQuotedBot;
+
+        if (allowAudio && isGeminiEnabled()) {
+          try {
+            console.log(`\n🎙️ [Voice Note Masuk] Mengunduh pesan suara dari ${senderName} (${remoteJid})...`);
+            await sock.readMessages([msg.key]);
+            const audioBuffer = await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              {
+                logger: pino({ level: 'silent' }),
+                reuploadRequest: sock.updateMediaMessage
+              }
+            );
+
+            if (audioBuffer && audioBuffer.length > 0) {
+              const mimeType = msg.message.audioMessage.mimetype || 'audio/ogg';
+              console.log(`🎙️ [Gemini Audio AI] Menganalisis isi suara (${audioBuffer.length} bytes)...`);
+              const audioRes = await extractMeetingFromAudio(audioBuffer, mimeType, senderName);
+
+              if (audioRes) {
+                if (audioRes.transcription) {
+                  console.log(`🎙️ [Transkrip Suara]: "${audioRes.transcription}"`);
+                }
+
+                if (audioRes.intent === 'CREATE_MEETING') {
+                  if (audioRes.needsMoreInfo) {
+                    await sock.sendMessage(remoteJid, { text: audioRes.replyMessage }, { quoted: msg });
+                    continue;
+                  }
+                  audioMeetingCommand = {
+                    platform: audioRes.platform || 'ZOOM',
+                    topic: audioRes.topic || (audioRes.platform === 'GMEET' ? 'Google Meet' : 'Zoom Meeting'),
+                    startTime: audioRes.startTime,
+                    durationMinutes: audioRes.durationMinutes || 60,
+                    autoRecord: true,
+                    autoSummary: true,
+                    transcription: audioRes.transcription
+                  };
+                  console.log(`🎙️ [Voice Note Berhasil Ekstraksi] Platform: ${audioMeetingCommand.platform}, Topik: "${audioMeetingCommand.topic}", Waktu: ${audioMeetingCommand.startTime}`);
+                } else if (audioRes.intent === 'OTHER' && (isPrivateChat || isBotMentioned)) {
+                  await sock.sendMessage(remoteJid, { text: audioRes.replyMessage }, { quoted: msg });
+                  continue;
+                }
+              }
+            }
+          } catch (audioErr) {
+            console.error('❌ Gagal memproses pesan suara:', audioErr.message);
+          }
+        }
+
+        if (!audioMeetingCommand) {
+          continue; // Jika audio bukan untuk bot atau bukan permintaan meeting, abaikan
+        }
+      }
+
       // Bersihkan mention tag bot dari teks (misal "@62812345678 buatkan zoom jam 2")
-      let cleanText = messageText.trim();
+      let cleanText = (messageText || '').trim();
       if (botNumber) {
         cleanText = cleanText.replace(new RegExp(`@${botNumber}\\b`, 'gi'), '').trim();
       }
       cleanText = cleanText.replace(/^@bot\b/i, '').trim();
 
-      // Cegah looping jika pesan berasal dari akun bot itu sendiri
-      if (isFromMe) continue;
-
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
-      if (isGroup && !isBotMentioned) {
+      if (isGroup && !isBotMentioned && !audioMeetingCommand) {
         const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText);
         if (!hasMeetingContext) {
@@ -1135,6 +1331,14 @@ async function startBot() {
           if (!matchedMeeting) {
             const noMatchText = `Mohon maaf Bapak/Ibu, tidak ditemukan jadwal meeting yang cocok untuk dibatalkan.\nKetik *cek jadwal zoom* untuk melihat daftar jadwal yang masih aktif.`;
             await sock.sendMessage(remoteJid, { text: noMatchText }, { quoted: msg });
+            continue;
+          }
+
+          // Cek otorisasi pengirim (khusus pembuat rapat atau nomor Admin)
+          const senderParticipant = msg.key.participant || remoteJid;
+          if (!isAuthorizedSender(senderParticipant, matchedMeeting)) {
+            const denyCancel = `Mohon maaf Bapak/Ibu, pembatalan jadwal meeting hanya dapat dilakukan oleh pembuat rapat atau nomor Admin.`;
+            await sock.sendMessage(remoteJid, { text: denyCancel }, { quoted: msg });
             continue;
           }
 
@@ -1308,6 +1512,54 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
+      // C2. CEK PERINTAH SLOT WAKTU / JAM KOSONG ("kapan zoom kosong?", "!kosong")
+      // -----------------------------------------------------------------------
+      const emptySlotsCmd = parseEmptySlotsCommand(cleanText);
+      if (emptySlotsCmd) {
+        console.log(`\n🔍 [Perintah Cek Slot Kosong Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+
+          const slotsData = getAvailableTimeSlots(emptySlotsCmd.dayOffset, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
+          const dayLabel = emptySlotsCmd.dayOffset === 0 ? 'Hari Ini' : (emptySlotsCmd.dayOffset === 1 ? 'Besok' : 'Lusa');
+
+          const lines = [
+            `📅 *Ketersediaan Jam Akun Zoom (${dayLabel} - ${slotsData.formattedDate}):*`,
+            ``
+          ];
+
+          if (slotsData.booked.length > 0) {
+            lines.push(`🔴 *Jadwal Terisi / Sedang Dipakai:*`);
+            slotsData.booked.forEach(b => {
+              lines.push(`• ${b.formattedStart} - ${b.formattedEnd} WIB: *${b.topic}*`);
+            });
+            lines.push(``);
+          } else {
+            lines.push(`✨ _Belum ada jadwal meeting Zoom yang terdaftar untuk hari ini._`);
+            lines.push(``);
+          }
+
+          if (slotsData.free.length > 0) {
+            lines.push(`🟢 *Slot Jam Kosong yang Siap Digunakan:*`);
+            slotsData.free.forEach(f => {
+              lines.push(`• Pukul *${f.formattedStart} - ${f.formattedEnd} WIB*`);
+            });
+          } else {
+            lines.push(`⚠️ _Seluruh slot jam operasional hari ini sudah terisi penuh._`);
+          }
+
+          lines.push(``);
+          lines.push(`💡 _Contoh pesan: "buatkan zoom jam 14.00 topik evaluasi"_`);
+
+          await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg });
+          console.log(`✅ Informasi slot kosong berhasil dikirim ke ${remoteJid}`);
+        } catch (slotErr) {
+          console.error('❌ Error menampilkan slot kosong:', slotErr);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
       // D. CEK PERINTAH REKAM LIVE (Meeting Sedang Berlangsung)
       // -----------------------------------------------------------------------
       const liveRecCmd = parseLiveRecordCommand(cleanText);
@@ -1396,6 +1648,15 @@ async function startBot() {
           if (!targetMeetingId) {
             const noLiveMsg = `Mohon maaf Pak/Bu, saat ini tidak terdeteksi adanya meeting Zoom yang sedang aktif/berlangsung untuk dihentikan.\nKetik *cek jadwal zoom* untuk melihat daftar jadwal meeting.`;
             await sock.sendMessage(remoteJid, { text: noLiveMsg }, { quoted: msg });
+            continue;
+          }
+
+          // Cek otorisasi pengirim untuk menghentikan meeting (khusus pembuat rapat atau nomor Admin)
+          const targetMeetingObj = getScheduledMeetingById(targetMeetingId);
+          const senderParticipant = msg.key.participant || remoteJid;
+          if (targetMeetingObj && !isAuthorizedSender(senderParticipant, targetMeetingObj)) {
+            const denyEnd = `Mohon maaf Bapak/Ibu, penghentian rapat yang sedang berlangsung hanya dapat dilakukan oleh pembuat rapat atau nomor Admin.`;
+            await sock.sendMessage(remoteJid, { text: denyEnd }, { quoted: msg });
             continue;
           }
 
@@ -1523,7 +1784,7 @@ async function startBot() {
       // -----------------------------------------------------------------------
       // F. PROSES PERINTAH MEMBUAT MEETING (ZOOM & GOOGLE MEET)
       // -----------------------------------------------------------------------
-      let command = parseMeetingCommand(cleanText);
+      let command = audioMeetingCommand || parseMeetingCommand(cleanText);
 
       // Fallback Cerdas: Jika regex lokal belum menangkap dan fitur Gemini AI diaktifkan
       if (!command && isGeminiEnabled()) {
@@ -1620,6 +1881,7 @@ async function startBot() {
             // Format balasan WhatsApp resmi & formal
             const replySuccess = [
               `Yth. Bapak/Ibu,`,
+              command.transcription ? `🎙️ _Pesan Suara Terdeteksi: "${command.transcription}"_\n` : null,
               `Berikut informasi tautan Google Meet yang telah berhasil dibuat:`,
               ``,
               `📌 *Topik Agenda:* ${meeting.topic}`,
@@ -1654,8 +1916,13 @@ async function startBot() {
             }
           } catch (gmeetErr) {
             console.error('❌ Gagal membuat Google Meet:', gmeetErr.message);
-            const errReply = `Mohon maaf Bapak/Ibu, terjadi kendala saat membuat Google Meet: ${gmeetErr.message}\n\n` +
-              `_💡 Tips: Pastikan akun Google sudah terhubung dengan benar di sistem bot._`;
+            const isAuthError = gmeetErr.message.includes('invalid_grant') || gmeetErr.message.includes('kedaluwarsa');
+            let errReply = `Mohon maaf Bapak/Ibu, terjadi kendala saat membuat Google Meet:\n\n${gmeetErr.message}`;
+            if (isAuthError) {
+              errReply += `\n\n💡 _Solusi Cepat: Anda juga bisa membuat ruang rapat menggunakan Zoom sekarang dengan mengetik "buatkan zoom"._`;
+            } else {
+              errReply += `\n\n_💡 Tips: Pastikan akun Google sudah terhubung dengan benar di sistem bot._`;
+            }
             await sock.sendMessage(remoteJid, { text: errReply }, { quoted: msg });
           }
           continue;
@@ -1690,6 +1957,7 @@ async function startBot() {
           // Template balasan resmi & formal
           const replySuccess = [
             `Yth. Bapak/Ibu,`,
+            command.transcription ? `🎙️ _Pesan Suara Terdeteksi: "${command.transcription}"_\n` : null,
             `Berikut rincian tautan Zoom Meeting yang telah berhasil dijadwalkan:`,
             ``,
             `📌 *Topik Agenda:* ${meeting.topic}`,

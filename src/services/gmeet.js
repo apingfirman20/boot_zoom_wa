@@ -6,42 +6,77 @@
  * - smartNotes: ON (rangkuman / notula rapat otomatis dengan Gemini Workspace)
  */
 
+import fs from 'fs';
+import path from 'path';
+
 let cachedAccessToken = null;
 let tokenExpiresAt = 0;
+
+/**
+ * Mengambil kredensial Google dari process.env atau langsung dari file .env terbaru
+ * agar bot yang sedang berjalan otomatis mendeteksi pembaruan token tanpa harus restart.
+ */
+export function getGoogleCredentials() {
+  let clientId = process.env.GOOGLE_CLIENT_ID;
+  let clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  let refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+
+  try {
+    const envPath = path.resolve(process.cwd(), '.env');
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf8');
+      const rtMatch = content.match(/^GOOGLE_REFRESH_TOKEN=(.+)$/m);
+      if (rtMatch && rtMatch[1].trim()) {
+        refreshToken = rtMatch[1].trim();
+        process.env.GOOGLE_REFRESH_TOKEN = refreshToken;
+      }
+      const cidMatch = content.match(/^GOOGLE_CLIENT_ID=(.+)$/m);
+      if (cidMatch && cidMatch[1].trim()) {
+        clientId = cidMatch[1].trim();
+        process.env.GOOGLE_CLIENT_ID = clientId;
+      }
+      const csMatch = content.match(/^GOOGLE_CLIENT_SECRET=(.+)$/m);
+      if (csMatch && csMatch[1].trim()) {
+        clientSecret = csMatch[1].trim();
+        process.env.GOOGLE_CLIENT_SECRET = clientSecret;
+      }
+    }
+  } catch (e) {
+    // Abaikan jika gagal akses file
+  }
+
+  return { clientId, clientSecret, refreshToken };
+}
 
 /**
  * Memeriksa apakah konfigurasi kredensial Google Meet sudah lengkap di environment variables.
  * @returns {boolean}
  */
 export function isGoogleConfigured() {
-  return Boolean(
-    process.env.GOOGLE_CLIENT_ID &&
-    process.env.GOOGLE_CLIENT_SECRET &&
-    process.env.GOOGLE_REFRESH_TOKEN
-  );
+  const { clientId, clientSecret, refreshToken } = getGoogleCredentials();
+  return Boolean(clientId && clientSecret && refreshToken);
 }
 
 /**
  * Mendapatkan access token Google API via OAuth 2.0 Refresh Token.
  * Dilengkapi in-memory caching sebelum masa berlaku kedaluwarsa.
  * 
+ * @param {boolean} [forceRefresh=false]
  * @returns {Promise<string>}
  */
-export async function getGoogleAccessToken() {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+export async function getGoogleAccessToken(forceRefresh = false) {
+  const { clientId, clientSecret, refreshToken } = getGoogleCredentials();
 
   if (!clientId || !clientSecret || !refreshToken) {
     throw new Error(
       'Kredensial Google (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN) belum lengkap di .env. ' +
-      'Silakan jalankan "node setup-google.js" untuk menghubungkan akun Google Anda.'
+      'Silakan jalankan "setup-google.bat" untuk menghubungkan akun Google Anda.'
     );
   }
 
   // Gunakan token dari cache jika masih berlaku (buffer 60 detik)
   const now = Date.now();
-  if (cachedAccessToken && now < tokenExpiresAt - 60000) {
+  if (!forceRefresh && cachedAccessToken && now < tokenExpiresAt - 60000) {
     return cachedAccessToken;
   }
 
@@ -61,6 +96,21 @@ export async function getGoogleAccessToken() {
 
   if (!response.ok) {
     const errorText = await response.text();
+    cachedAccessToken = null;
+    tokenExpiresAt = 0;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(errorText);
+    } catch (e) {}
+
+    if (parsed?.error === 'invalid_grant') {
+      throw new Error(
+        'Sesi otorisasi Google Meet telah kedaluwarsa atau dicabut (invalid_grant).\n' +
+        'Silakan perbarui login dengan menjalankan file "setup-google.bat" di server bot.'
+      );
+    }
+
     throw new Error(`Gagal mendapatkan Google access token (${response.status}): ${errorText}`);
   }
 
