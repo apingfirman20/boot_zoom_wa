@@ -45,6 +45,7 @@ import {
 import {
   extractMeetingDetails,
   extractMeetingFromAudio,
+  transcribeAudio,
   isGeminiEnabled
 } from './src/services/gemini.js';
 import {
@@ -1199,7 +1200,8 @@ async function startBot() {
       // Cegah looping jika pesan berasal dari akun bot itu sendiri
       if (isFromMe) continue;
 
-      let audioMeetingCommand = null;
+      let isVoiceNote = false;
+      let voiceTranscription = '';
 
       // Pemrosesan Voice Note (VN) jika pesan berupa audio
       if (isAudio) {
@@ -1221,33 +1223,14 @@ async function startBot() {
 
             if (audioBuffer && audioBuffer.length > 0) {
               const mimeType = msg.message.audioMessage.mimetype || 'audio/ogg';
-              console.log(`🎙️ [Gemini Audio AI] Menganalisis isi suara (${audioBuffer.length} bytes)...`);
-              const audioRes = await extractMeetingFromAudio(audioBuffer, mimeType, senderName);
+              console.log(`🎙️ [Gemini Audio AI] Mentranskripsi suara (${audioBuffer.length} bytes)...`);
+              const transcribed = await transcribeAudio(audioBuffer, mimeType, senderName);
 
-              if (audioRes) {
-                if (audioRes.transcription) {
-                  console.log(`🎙️ [Transkrip Suara]: "${audioRes.transcription}"`);
-                }
-
-                if (audioRes.intent === 'CREATE_MEETING') {
-                  if (audioRes.needsMoreInfo) {
-                    await sock.sendMessage(remoteJid, { text: audioRes.replyMessage }, { quoted: msg });
-                    continue;
-                  }
-                  audioMeetingCommand = {
-                    platform: audioRes.platform || 'ZOOM',
-                    topic: audioRes.topic || (audioRes.platform === 'GMEET' ? 'Google Meet' : 'Zoom Meeting'),
-                    startTime: audioRes.startTime,
-                    durationMinutes: audioRes.durationMinutes || 60,
-                    autoRecord: true,
-                    autoSummary: true,
-                    transcription: audioRes.transcription
-                  };
-                  console.log(`🎙️ [Voice Note Berhasil Ekstraksi] Platform: ${audioMeetingCommand.platform}, Topik: "${audioMeetingCommand.topic}", Waktu: ${audioMeetingCommand.startTime}`);
-                } else if (audioRes.intent === 'OTHER' && (isPrivateChat || isBotMentioned)) {
-                  await sock.sendMessage(remoteJid, { text: audioRes.replyMessage }, { quoted: msg });
-                  continue;
-                }
+              if (transcribed && transcribed.trim()) {
+                console.log(`🎙️ [Transkrip Suara Berhasil]: "${transcribed}"`);
+                messageText = transcribed.trim();
+                isVoiceNote = true;
+                voiceTranscription = transcribed.trim();
               }
             }
           } catch (audioErr) {
@@ -1255,8 +1238,8 @@ async function startBot() {
           }
         }
 
-        if (!audioMeetingCommand) {
-          continue; // Jika audio bukan untuk bot atau bukan permintaan meeting, abaikan
+        if (!messageText || messageText.trim() === '') {
+          continue; // Jika audio gagal ditranskrip atau bukan untuk bot, abaikan
         }
       }
 
@@ -1269,7 +1252,7 @@ async function startBot() {
 
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
-      if (isGroup && !isBotMentioned && !audioMeetingCommand) {
+      if (isGroup && !isBotMentioned && !isVoiceNote) {
         const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
                                   Boolean(parseEmptySlotsCommand(cleanText));
@@ -1363,13 +1346,14 @@ async function startBot() {
           const formattedTime = formatMeetingTime(matchedMeeting.startTime);
           const platformName = isGMeet ? 'Google Meet' : 'Zoom';
           const replyCancel = [
+            isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n` : null,
             `✅ *Jadwal ${platformName} Berhasil Dibatalkan & Dihapus:*`,
             `📌 *Topik:* ${matchedMeeting.topic}`,
             `🗓️ *Waktu:* ${formattedTime}`,
             `🆔 *ID Meeting:* ${matchedMeeting.id}`,
             ``,
             `Jadwal pada jam tersebut sekarang sudah kosong dan bisa digunakan kembali.`
-          ].join('\n');
+          ].filter(Boolean).join('\n');
 
           await sock.sendMessage(remoteJid, { text: replyCancel }, { quoted: msg });
           console.log(`✅ Meeting ${matchedMeeting.id} (${matchedMeeting.topic}) [${platformName}] berhasil dibatalkan.`);
@@ -1496,9 +1480,10 @@ async function startBot() {
           }
 
           const lines = [
+            isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n` : null,
             `📅 *Daftar Jadwal Meeting Zoom Aktif:*`,
             ``
-          ];
+          ].filter(Boolean);
 
           validMeetings.forEach((m, idx) => {
             const fTime = formatMeetingTime(m.startTime);
@@ -1531,9 +1516,10 @@ async function startBot() {
           const dayLabel = emptySlotsCmd.dayOffset === 0 ? 'Hari Ini' : (emptySlotsCmd.dayOffset === 1 ? 'Besok' : 'Lusa');
 
           const lines = [
+            isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n` : null,
             `📅 *Ketersediaan Jam Akun Zoom (${dayLabel} - ${slotsData.formattedDate}):*`,
             ``
-          ];
+          ].filter(Boolean);
 
           if (slotsData.booked.length > 0) {
             lines.push(`🔴 *Jadwal Terisi / Sedang Dipakai:*`);
@@ -1791,7 +1777,7 @@ async function startBot() {
       // -----------------------------------------------------------------------
       // F. PROSES PERINTAH MEMBUAT MEETING (ZOOM & GOOGLE MEET)
       // -----------------------------------------------------------------------
-      let command = audioMeetingCommand || parseMeetingCommand(cleanText);
+      let command = parseMeetingCommand(cleanText);
 
       // Fallback Cerdas & Tanya-Jawab AI Interaktif:
       // Hanya aktif jika pengguna chat pribadi (PC), ATAU di grup saat bot di-tag (@bot) / dikomentari (reply)
@@ -1809,7 +1795,8 @@ async function startBot() {
               if (aiRes.intent === 'CREATE_MEETING') {
                 if (aiRes.needsMoreInfo) {
                   await sock.readMessages([msg.key]);
-                  await sock.sendMessage(remoteJid, { text: aiRes.replyMessage }, { quoted: msg });
+                  const needInfoText = (isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n\n` : '') + aiRes.replyMessage;
+                  await sock.sendMessage(remoteJid, { text: needInfoText }, { quoted: msg });
                   continue;
                 }
                 command = {
@@ -1823,7 +1810,8 @@ async function startBot() {
                 console.log(`🤖 [Gemini AI Berhasil Ekstraksi] Platform: ${command.platform}, Topik: "${command.topic}", Waktu: ${command.startTime}`);
               } else if (aiRes.intent === 'OTHER') {
                 await sock.readMessages([msg.key]);
-                await sock.sendMessage(remoteJid, { text: aiRes.replyMessage }, { quoted: msg });
+                const replyText = (isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n\n` : '') + aiRes.replyMessage;
+                await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
                 continue;
               }
             }
@@ -1890,7 +1878,7 @@ async function startBot() {
             // Format balasan WhatsApp resmi & formal
             const replySuccess = [
               `Yth. Bapak/Ibu,`,
-              command.transcription ? `🎙️ _Pesan Suara Terdeteksi: "${command.transcription}"_\n` : null,
+              (isVoiceNote || command.transcription) ? `🎙️ _Pesan Suara: "${voiceTranscription || command.transcription}"_\n` : null,
               `Berikut informasi tautan Google Meet yang telah berhasil dibuat:`,
               ``,
               `📌 *Topik Agenda:* ${meeting.topic}`,
@@ -1966,7 +1954,7 @@ async function startBot() {
           // Template balasan resmi & formal
           const replySuccess = [
             `Yth. Bapak/Ibu,`,
-            command.transcription ? `🎙️ _Pesan Suara Terdeteksi: "${command.transcription}"_\n` : null,
+            (isVoiceNote || command.transcription) ? `🎙️ _Pesan Suara: "${voiceTranscription || command.transcription}"_\n` : null,
             `Berikut rincian tautan Zoom Meeting yang telah berhasil dijadwalkan:`,
             ``,
             `📌 *Topik Agenda:* ${meeting.topic}`,

@@ -166,6 +166,60 @@ Panduan Tugas:
 }
 
 /**
+ * Mentranskripsikan pesan suara (Voice Note) WhatsApp menjadi teks bahasa Indonesia
+ * menggunakan multimodal audio understanding dari Google Gemini API.
+ * 
+ * @param {Buffer} audioBuffer
+ * @param {string} mimeType
+ * @param {string} senderName
+ * @param {number} timeoutMs
+ * @returns {Promise<string|null>}
+ */
+export async function transcribeAudio(audioBuffer, mimeType = 'audio/ogg', senderName = '', timeoutMs = 15000) {
+  if (!isGeminiEnabled() || !audioBuffer) return null;
+
+  const ai = getAiClient();
+  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const cleanMime = mimeType ? mimeType.split(';')[0].trim() : 'audio/ogg';
+
+  const callPromise = (async () => {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType: cleanMime,
+                data: audioBuffer.toString('base64')
+              }
+            },
+            {
+              text: 'Dengarkan pesan suara berikut dan transkripsikan seluruh isi ucapannya secara akurat ke dalam teks bahasa Indonesia. Berikan HANYA teks murni hasil transkripsinya saja tanpa tanda kutip, tanpa penjelasan, dan tanpa komentar pembuka/penutup.'
+            }
+          ]
+        }
+      ]
+    });
+
+    const text = response.text?.trim() || '';
+    return text.replace(/^["'`]+|["'`]+$/g, '').trim();
+  })();
+
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Gemini Audio Transcription timeout (${timeoutMs}ms)`)), timeoutMs)
+  );
+
+  try {
+    return await Promise.race([callPromise, timeoutPromise]);
+  } catch (error) {
+    console.warn(`⚠️ Gagal transkripsi pesan suara Gemini: ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Menganalisis pesan audio / voice note (VN) dari WhatsApp menggunakan Gemini API.
  * Mentranskripsikan audio dan mengekstrak perintah meeting secara langsung.
  * 
