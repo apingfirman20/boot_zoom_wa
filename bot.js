@@ -1303,17 +1303,66 @@ async function startBot() {
       const isPrivateChat = !isGroup;
 
       // Cek apakah bot di-tag / di-mention di grup atau membalas (quote) pesan bot
-      const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.audioMessage?.contextInfo;
+      const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
+                          msg.message?.audioMessage?.contextInfo ||
+                          msg.message?.imageMessage?.contextInfo;
       const mentionedJid = contextInfo?.mentionedJid || [];
-      const botNumber = sock.user?.id ? sock.user.id.split(':')[0] : '';
-      const isQuotedBot = Boolean(botNumber && contextInfo?.participant?.startsWith(botNumber));
-      const isBotMentioned = Boolean(
-        (botNumber && mentionedJid.some(jid => jid.startsWith(botNumber))) ||
-        isQuotedBot
+      const botPhone = (sock.user?.id || sock.authState?.creds?.me?.id || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+      const botLid = (sock.user?.lid || sock.authState?.creds?.me?.lid || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+      const botName = (sock.user?.name || sock.authState?.creds?.me?.name || '').toLowerCase();
+
+      // Cek apakah peserta yang di-quote adalah bot (via nomor HP, via LID, atau contextInfo.fromMe)
+      const quotedParticipant = (contextInfo?.participant || '').split(':')[0].split('@')[0].replace(/\D/g, '');
+      const isQuotedParticipantBot = Boolean(
+        contextInfo?.fromMe === true ||
+        (botPhone && quotedParticipant === botPhone) ||
+        (botLid && quotedParticipant === botLid) ||
+        (botPhone && (contextInfo?.participant || '').includes(botPhone)) ||
+        (botLid && (contextInfo?.participant || '').includes(botLid))
       );
+
+      // Cek apakah teks pesan yang dikutip berasal dari bot (signature check template bot)
       const quotedText = contextInfo?.quotedMessage?.conversation ||
                          contextInfo?.quotedMessage?.extendedTextMessage?.text ||
+                         contextInfo?.quotedMessage?.imageMessage?.caption ||
                          '';
+
+      const isQuotedTemplateBot = Boolean(
+        quotedText && (
+          quotedText.includes('Ketersediaan Jam Akun Zoom') ||
+          quotedText.includes('Slot Jam Kosong') ||
+          quotedText.includes('Jadwal Terisi') ||
+          quotedText.includes('Link Zoom Meeting') ||
+          quotedText.includes('Tautan Google Meet') ||
+          quotedText.includes('NOTULA RAPAT') ||
+          quotedText.includes('LAPORAN KEHADIRAN') ||
+          quotedText.includes('Yth. Bapak/Ibu') ||
+          quotedText.includes('Jadwal Zoom') ||
+          quotedText.includes('Mohon maaf Bapak/Ibu') ||
+          quotedText.includes('Pemberitahuan Jadwal') ||
+          quotedText.includes('Kode Meeting:') ||
+          quotedText.includes('Notula Rapat & Pelacak')
+        )
+      );
+
+      const isQuotedBot = Boolean(isQuotedParticipantBot || isQuotedTemplateBot);
+
+      // Cek apakah bot di-mention di grup (via mentionedJid HP / LID atau tag teks)
+      const isMentionedInJid = mentionedJid.some(jid => {
+        const cleanJid = jid.split(':')[0].split('@')[0].replace(/\D/g, '');
+        return (botPhone && cleanJid === botPhone) ||
+               (botLid && cleanJid === botLid) ||
+               (botPhone && jid.includes(botPhone)) ||
+               (botLid && jid.includes(botLid));
+      });
+
+      const hasBotTagInText = Boolean(
+        /@(?:bot|istri\s*tercinta)\b/i.test(messageText) ||
+        (botName && messageText.toLowerCase().includes(`@${botName}`)) ||
+        (botPhone && messageText.includes(`@${botPhone}`))
+      );
+
+      const isBotMentioned = Boolean(isMentionedInJid || hasBotTagInText || isQuotedBot);
 
       // Cegah looping jika pesan berasal dari akun bot itu sendiri
       if (isFromMe) continue;
@@ -1361,12 +1410,18 @@ async function startBot() {
         }
       }
 
-      // Bersihkan mention tag bot dari teks (misal "@62812345678 buatkan zoom jam 2")
+      // Bersihkan mention tag bot dari teks (misal "@62812345678", "@Istri tercinta", "@bot")
       let cleanText = (messageText || '').trim();
-      if (botNumber) {
-        cleanText = cleanText.replace(new RegExp(`@${botNumber}\\b`, 'gi'), '').trim();
+      if (botPhone) {
+        cleanText = cleanText.replace(new RegExp(`@${botPhone}\\b`, 'gi'), '').trim();
       }
-      cleanText = cleanText.replace(/^@bot\b/i, '').trim();
+      if (botLid) {
+        cleanText = cleanText.replace(new RegExp(`@${botLid}\\b`, 'gi'), '').trim();
+      }
+      cleanText = cleanText.replace(/@(?:bot|istri\s*tercinta)\b/gi, '').trim();
+      if (botName) {
+        cleanText = cleanText.replace(new RegExp(`@${botName}\\b`, 'gi'), '').trim();
+      }
 
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
@@ -1900,7 +1955,7 @@ async function startBot() {
       // -----------------------------------------------------------------------
       // F. CEK PERINTAH BANTUAN / PANDUAN (!info, !help, Mention Grup, Sapaan PC)
       // -----------------------------------------------------------------------
-      const helpCmd = parseHelpCommand(cleanText, { isGroup, isBotMentioned, isPrivateChat });
+      const helpCmd = parseHelpCommand(cleanText, { isGroup, isBotMentioned, isPrivateChat, isQuotedBot });
       if (helpCmd) {
         console.log(`\n💡 [Petunjuk/Panduan Diminta] Dari: ${senderName} (${remoteJid}, trigger: ${helpCmd.trigger}): "${cleanText}"`);
         try {
@@ -1920,13 +1975,12 @@ async function startBot() {
       let command = parseMeetingCommand(cleanText);
 
       // Fallback Cerdas & Tanya-Jawab AI Interaktif:
-      // Hanya aktif jika pengguna chat pribadi (PC), ATAU di grup saat bot di-tag (@bot) / dikomentari (reply)
+      // Aktif jika pengguna chat pribadi (PC), ATAU di grup saat bot di-tag (@bot), ATAU saat pesan bot di-reply / di-quote
       if (!command && isGeminiEnabled()) {
-        const isPrivateChat = !isGroup;
-        const allowGemini = isPrivateChat || isBotMentioned;
+        const allowGemini = isPrivateChat || isBotMentioned || isQuotedBot;
         if (allowGemini) {
           try {
-            console.log(`🤖 [Gemini AI Interaktif] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}"`);
+            console.log(`🤖 [Gemini AI Interaktif] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}" (isQuotedBot: ${isQuotedBot})`);
             const aiRes = await extractMeetingDetails(cleanText, senderName, {
               quotedText,
               activeMeetings: getActiveMeetings()

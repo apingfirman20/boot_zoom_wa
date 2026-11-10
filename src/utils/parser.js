@@ -578,7 +578,12 @@ export function parseEditCommand(messageText, defaultTz = process.env.DEFAULT_TI
  * @param {boolean} options.isPrivateChat
  * @returns {object|null}
  */
-export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned = false, isPrivateChat = false } = {}) {
+export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned = false, isPrivateChat = false, isQuotedBot = false } = {}) {
+  // Jika sedang membalas (quote) pesan bot, ini adalah percakapan/tanya jawab konteks, BUKAN perintah bantuan
+  if (isQuotedBot) {
+    return null;
+  }
+
   // Jika bot di-mention di grup dan teks kosong / hanya whitespace
   if (isGroup && isBotMentioned && (!messageText || typeof messageText !== 'string' || messageText.trim() === '')) {
     return { isHelpCommand: true, trigger: 'group_mention' };
@@ -599,10 +604,22 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
 
   // 2. Jika bot di-tag/di-mention di grup
   if (isGroup && isBotMentioned) {
-    // Periksa apakah pesan mengandung aksi spesifik
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan)/i.test(lower);
-    if (!hasSpecificAction) {
+    // Jika user mengajukan pertanyaan (tanda tanya atau kata tanya), jangan potong dengan menu panduan
+    const isQuestionOrInquiry = /[?]|^(?:siapa|apa|kapan|kenapa|mengapa|bagaimana|gimana|ada\s+apa|bisa\s+bantu|tolong)/i.test(lower);
+    if (isQuestionOrInquiry) {
+      return null;
+    }
+
+    // Periksa apakah pesan hanya sapaan singkat
+    const isBriefGreeting = /^(?:halo|hai|hi|hey|hello|p|ping|tes|test|bot|min)[!.,? ]*$/i.test(lower);
+    if (isBriefGreeting) {
       return { isHelpCommand: true, trigger: 'group_mention' };
+    }
+
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|b15m)/i.test(lower);
+    if (!hasSpecificAction) {
+      // Biarkan pertanyaan/percakapan mengalir ke Gemini AI interaktif
+      return null;
     }
   }
 
@@ -612,7 +629,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
                        /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
                        /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|b15m)/i.test(lower);
 
     if (isGreeting && !hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'private_greeting' };

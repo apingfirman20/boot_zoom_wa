@@ -821,3 +821,4 @@ export function formatB15MWhatsAppMessage({
 
   return lines.join('\n');
 }
+
