@@ -1183,11 +1183,15 @@ async function startBot() {
       const isGroup = remoteJid.endsWith('@g.us');
       const isPrivateChat = !isGroup;
 
-      // Cek apakah bot di-tag / di-mention di grup
+      // Cek apakah bot di-tag / di-mention di grup atau membalas (quote) pesan bot
       const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.audioMessage?.contextInfo;
       const mentionedJid = contextInfo?.mentionedJid || [];
       const botNumber = sock.user?.id ? sock.user.id.split(':')[0] : '';
-      const isBotMentioned = Boolean(botNumber && mentionedJid.some(jid => jid.startsWith(botNumber)));
+      const isQuotedBot = Boolean(botNumber && contextInfo?.participant?.startsWith(botNumber));
+      const isBotMentioned = Boolean(
+        (botNumber && mentionedJid.some(jid => jid.startsWith(botNumber))) ||
+        isQuotedBot
+      );
 
       // Cegah looping jika pesan berasal dari akun bot itu sendiri
       if (isFromMe) continue;
@@ -1196,8 +1200,7 @@ async function startBot() {
 
       // Pemrosesan Voice Note (VN) jika pesan berupa audio
       if (isAudio) {
-        const isQuotedBot = Boolean(botNumber && contextInfo?.participant?.startsWith(botNumber));
-        const allowAudio = isPrivateChat || isBotMentioned || isQuotedBot;
+        const allowAudio = isPrivateChat || isBotMentioned;
 
         if (allowAudio && isGeminiEnabled()) {
           try {
@@ -1261,11 +1264,12 @@ async function startBot() {
       }
       cleanText = cleanText.replace(/^@bot\b/i, '').trim();
 
-      // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal
+      // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
       if (isGroup && !isBotMentioned && !audioMeetingCommand) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat)/i.test(cleanText) ||
-                                  /^[!/#]/.test(cleanText);
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot)/i.test(cleanText) ||
+                                  /^[!/#]/.test(cleanText) ||
+                                  Boolean(parseEmptySlotsCommand(cleanText));
         if (!hasMeetingContext) {
           continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
         }
