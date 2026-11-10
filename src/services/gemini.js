@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { getCurrentTimeContext } from '../utils/datetime.js';
+import { getCurrentTimeContext, formatMeetingTime } from '../utils/datetime.js';
 
 let aiInstance = null;
 
@@ -40,44 +40,63 @@ export function isGeminiEnabled() {
  *   replyMessage: string
  * }|null>}
  */
-export async function extractMeetingDetails(userMessage, senderName = '', timeoutMs = 6000) {
+export async function extractMeetingDetails(userMessage, senderName = '', { quotedText = '', activeMeetings = [] } = {}, timeoutMs = 8000) {
   if (!isGeminiEnabled()) return null;
 
   const ai = getAiClient();
-  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   const timeContext = getCurrentTimeContext();
 
+  // Susun ringkasan jadwal rapat aktif agar AI bisa menjawab pertanyaan seputar jadwal rapat
+  const meetingsSummary = (activeMeetings || []).map((m, idx) => {
+    const formatted = formatMeetingTime(m.startTime);
+    const requester = m.requesterPhone ? m.requesterPhone.split('@')[0] : 'Tidak tercatat';
+    return `${idx + 1}. Topik: "${m.topic}", Platform: ${m.platform || 'ZOOM'}, Waktu: ${formatted}, Durasi: ${m.duration || 60} Menit, Nomor Pembuat: +${requester}, ID Meeting: ${m.id}`;
+  }).join('\n');
+
   const systemInstruction = `
-Kamu adalah asisten eksekutif cerdas WhatsApp yang bertugas melayani pembuatan dan penjadwalan pertemuan online (Zoom Meeting atau Google Meet).
+Kamu adalah Asisten Eksekutif Cerdas WhatsApp untuk penjadwalan meeting (Zoom Meeting & Google Meet).
 Waktu lokal saat ini: ${timeContext.localString}
 Timezone: ${timeContext.timezone}
 ISO Waktu Saat Ini: ${timeContext.isoString}
 
+Daftar Jadwal Rapat yang Terdaftar di Sistem Saat Ini:
+${meetingsSummary || '(Belum ada jadwal meeting yang terdaftar)'}
+
 Gaya Bahasa:
-- Sangat sopan, formal, profesional, dan ramah (executive standard).
-- Gunakan sapaan Bapak/Ibu.
+- Sangat sopan, ramah, formal, profesional, dan solutif (standar asisten eksekutif).
+- Gunakan sapaan Bapak/Ibu atau nama pengguna jika tersedia.
 
-Panduan Ekstraksi:
-1. Jika pengguna ingin membuat/menjadwalkan meeting:
+Panduan Tugas:
+1. Jika pengguna berniat MEMBUAT/MENJADWALKAN meeting baru:
    - Set "intent" = "CREATE_MEETING".
-   - Ekstrak "platform": Tentukan apakah pengguna meminta "GMEET" (jika menyebut gmeet, google meet, meet) atau "ZOOM" (jika menyebut zoom atau meeting umum). Nilai: "ZOOM" atau "GMEET".
-   - Ekstrak "topic": Judul/agenda meeting (contoh: "Diskusi Proyek Web", "TIM SOTS", default: "Meeting").
-   - Ekstrak "startTime": Hitung tanggal dan jam berdasarkan kata-kata relatif seperti "nanti jam 4 sore", "besok jam 10 pagi", "lusa", "hari Senin jam 14:00". Konversikan ke format ISO 8601 lengkap dengan offset timezone (contoh: "2026-09-08T14:00:00+07:00") atau UTC Z.
-   - Jika pengguna meminta meeting tapi TIDAK menyebutkan jam/hari sama sekali:
+   - Ekstrak "platform": "ZOOM" atau "GMEET" (default "ZOOM" jika tidak spesifik).
+   - Ekstrak "topic": Judul/agenda meeting (contoh: "Diskusi Proyek Web", default: "Meeting").
+   - Ekstrak "startTime": Hitung tanggal dan jam berdasarkan kata relatif (contoh: "jam 2 siang", "besok jam 10 pagi"). Konversikan ke format ISO 8601 lengkap dengan offset timezone.
+   - Ekstrak "durationMinutes": Durasi meeting dalam menit (default: 60 menit).
+   - Jika pengguna ingin membuat meeting tapi belum menyebutkan waktu sama sekali:
      - Set "needsMoreInfo" = true.
-     - Tuliskan "replyMessage" yang ramah dan sopan menanyakan kapan waktu yang diinginkan Bapak/Ibu.
-   - Ekstrak "durationMinutes": Durasi meeting dalam menit (default: 60 menit / 1 jam jika tidak disebutkan).
+     - Tuliskan "replyMessage" yang ramah menanyakan kapan waktu yang diinginkan Bapak/Ibu.
 
-2. Jika pengguna HANYA menyapa, bertanya hal umum, atau tidak ada niat membuat meeting:
+2. Jika pengguna BERTANYA seputar jadwal rapat, siapa pembuat rapat, agenda jam tertentu, merespon/mengomentari pesan sebelumnya, atau percakapan umum:
    - Set "intent" = "OTHER".
    - Set "needsMoreInfo" = false.
-   - Tuliskan "replyMessage" yang ramah dan formal, memperkenalkan diri sebagai asisten penjadwalan Zoom & Google Meet, serta memberikan contoh penggunaan (contoh: "Ketik 'Tolong buatkan zoom jam 10 pagi untuk Review Project'").
+   - Jawab pertanyaan pengguna secara cerdas, tepat, informatif, dan ringkas di dalam "replyMessage" dengan mengacu pada:
+     a) Daftar jadwal rapat terdaftar di atas (misal siapa pembuatnya, jam berapa, apa topiknya, berapa lama durasinya).
+     b) Pesan yang dikutip/dibalas (jika ada).
+   - Contoh: Jika pengguna bertanya "jam 13 itu siapa yang buat dan buat apa?", periksa daftar jadwal di atas pada jam 13.00, lalu jawab dengan menyebutkan nama topik agendanya dan nomor pembuatnya dengan sopan.
+   - Jika pengguna hanya menyapa atau bertanya hal lain, jawab dengan ramah dan jelaskan bantuan yang dapat Anda berikan sebagai asisten penjadwalan.
 `.trim();
+
+  let userContent = `Pesan dari pengguna ${senderName ? `(${senderName})` : ''}: "${userMessage}"`;
+  if (quotedText) {
+    userContent = `[Konteks Pesan yang Dikutip/Dibalas]:\n"${quotedText}"\n\n` + userContent;
+  }
 
   const callPromise = (async () => {
     const response = await ai.models.generateContent({
       model: modelName,
-      contents: `Pesan dari pengguna ${senderName ? `(${senderName})` : ''}: "${userMessage}"`,
+      contents: userContent,
       config: {
         systemInstruction,
         responseMimeType: 'application/json',

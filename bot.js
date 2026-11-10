@@ -1192,6 +1192,9 @@ async function startBot() {
         (botNumber && mentionedJid.some(jid => jid.startsWith(botNumber))) ||
         isQuotedBot
       );
+      const quotedText = contextInfo?.quotedMessage?.conversation ||
+                         contextInfo?.quotedMessage?.extendedTextMessage?.text ||
+                         '';
 
       // Cegah looping jika pesan berasal dari akun bot itu sendiri
       if (isFromMe) continue;
@@ -1790,16 +1793,18 @@ async function startBot() {
       // -----------------------------------------------------------------------
       let command = audioMeetingCommand || parseMeetingCommand(cleanText);
 
-      // Fallback Cerdas: Jika regex lokal belum menangkap dan fitur Gemini AI diaktifkan
+      // Fallback Cerdas & Tanya-Jawab AI Interaktif:
+      // Hanya aktif jika pengguna chat pribadi (PC), ATAU di grup saat bot di-tag (@bot) / dikomentari (reply)
       if (!command && isGeminiEnabled()) {
         const isPrivateChat = !isGroup;
-        // Di grup WhatsApp, hanya layani Gemini jika bot di-mention/di-tag langsung
-        // agar bot tidak pernah "ikut-ikutan" percakapan bebas anggota grup
-        const allowGemini = isPrivateChat || (isGroup && isBotMentioned);
+        const allowGemini = isPrivateChat || isBotMentioned;
         if (allowGemini) {
           try {
-            console.log(`🤖 [Gemini AI Fallback] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}"`);
-            const aiRes = await extractMeetingDetails(cleanText, senderName);
+            console.log(`🤖 [Gemini AI Interaktif] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}"`);
+            const aiRes = await extractMeetingDetails(cleanText, senderName, {
+              quotedText,
+              activeMeetings: getActiveMeetings()
+            });
             if (aiRes) {
               if (aiRes.intent === 'CREATE_MEETING') {
                 if (aiRes.needsMoreInfo) {
@@ -1816,14 +1821,14 @@ async function startBot() {
                   autoSummary: true
                 };
                 console.log(`🤖 [Gemini AI Berhasil Ekstraksi] Platform: ${command.platform}, Topik: "${command.topic}", Waktu: ${command.startTime}`);
-              } else if (aiRes.intent === 'OTHER' && (isPrivateChat || isBotMentioned)) {
+              } else if (aiRes.intent === 'OTHER') {
                 await sock.readMessages([msg.key]);
                 await sock.sendMessage(remoteJid, { text: aiRes.replyMessage }, { quoted: msg });
                 continue;
               }
             }
           } catch (aiErr) {
-            console.warn('⚠️ Gagal memproses fallback Gemini:', aiErr.message);
+            console.warn('⚠️ Gagal memproses AI Interaktif Gemini:', aiErr.message);
           }
         }
       }
