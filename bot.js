@@ -19,7 +19,8 @@ import {
   parseSummaryCommand,
   parseEndMeetingCommand,
   parseEmptySlotsCommand,
-  parseFreeZoomCommand
+  parseFreeZoomCommand,
+  parseMeetingQaCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -47,7 +48,8 @@ import {
   extractMeetingDetails,
   extractMeetingFromAudio,
   transcribeAudio,
-  isGeminiEnabled
+  isGeminiEnabled,
+  answerMeetingQuestion
 } from './src/services/gemini.js';
 import {
   formatMeetingTime,
@@ -72,7 +74,9 @@ import {
   getScheduledMeetingById,
   getMeetingsPendingReminder,
   markMeetingReminderSent,
-  getAvailableTimeSlots
+  getAvailableTimeSlots,
+  saveMeetingArchive,
+  getMeetingArchives
 } from './src/services/schedule.js';
 import {
   isB15MMeeting,
@@ -590,6 +594,26 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 
     const meetingDate = startTime ? parseToDate(startTime) : new Date();
     const fileDateStr = formatB15MFileDate(meetingDate);
+
+    // Arsipkan ringkasan & action items B15M untuk kebutuhan tanya-jawab (Q&A) via WA
+    saveMeetingArchive({
+      id: meeting.id,
+      platform: meeting.platform,
+      topic: b15mTopic,
+      startTime: startTime || meetingDate.toISOString(),
+      endTime,
+      dateWib: fileDateStr,
+      duration: durationMinutes,
+      isB15M: true,
+      participants,
+      summaryTitle: aiSummary?.summaryTitle,
+      summaryOverview: aiSummary?.summaryOverview,
+      summaryDetails: aiSummary?.summaryDetails,
+      nextSteps: aiSummary?.nextSteps,
+      actionItems,
+      summaryDocUrl: aiSummary?.summaryDocUrl
+    });
+
     const b15mMsg = formatB15MWhatsAppMessage({
       meetingDate,
       timeRange,
@@ -755,6 +779,22 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
       }
     }
 
+    saveMeetingArchive({
+      id: meeting.id,
+      platform: meeting.platform,
+      topic,
+      startTime: startTime || new Date().toISOString(),
+      endTime,
+      duration: durationMinutes,
+      isB15M: false,
+      participants,
+      summaryTitle: aiSummary?.summaryTitle,
+      summaryOverview: aiSummary?.summaryOverview,
+      summaryDetails: aiSummary?.summaryDetails,
+      nextSteps: aiSummary?.nextSteps,
+      summaryDocUrl: aiSummary?.summaryDocUrl
+    });
+
     updateMeetingRecording(meeting.id, {
       summarySent: true,
       aiSummarySent: Boolean(aiSummary)
@@ -885,10 +925,232 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
   try {
     await globalSock.sendMessage(targetPhone, { text: lines.join('\n') });
     console.log(`✅ Notula AI meeting ${meetingId} berhasil dikirim ke ${targetPhone}!`);
+    saveMeetingArchive({
+      id: meetingId,
+      platform: isGMeet ? 'GMEET' : 'ZOOM',
+      topic,
+      startTime: effectiveStartTime || new Date().toISOString(),
+      endTime: pastDetails?.endTime || '',
+      duration: pastDetails?.duration || meeting?.duration || 0,
+      isB15M: false,
+      summaryTitle: aiSummary.summaryTitle,
+      summaryOverview: aiSummary.summaryOverview,
+      summaryDetails: aiSummary.summaryDetails,
+      nextSteps: aiSummary.nextSteps,
+      summaryDocUrl: aiSummary.summaryDocUrl
+    });
     updateMeetingRecording(meetingId, { aiSummarySent: true });
   } catch (err) {
     console.error(`Gagal mengirim notula AI ke ${targetPhone}:`, err.message);
   }
+}
+
+// Memori percakapan singkat per chat/grup (maks. 6 giliran terakhir) untuk membantu AI menjawab follow-up
+const chatTurnHistory = new Map();
+
+function recordChatTurn(jid, role, sender, text) {
+  if (!jid || !text) return;
+  const list = chatTurnHistory.get(jid) || [];
+  list.push({ role, sender: sender || 'User', text: String(text).trim().slice(0, 400) });
+  chatTurnHistory.set(jid, list.slice(-6));
+}
+
+function hasRichSummaryContent(archive) {
+  if (!archive) return false;
+  return Boolean(
+    archive.summaryOverview ||
+    (Array.isArray(archive.summaryDetails) && archive.summaryDetails.length > 0) ||
+    (Array.isArray(archive.nextSteps) && archive.nextSteps.length > 0) ||
+    (Array.isArray(archive.actionItems) && archive.actionItems.length > 0)
+  );
+}
+
+/**
+ * Memastikan arsip rapat terbaru (Zoom / Google Meet) tersedia di lokal,
+ * termasuk menarik langsung dari Zoom/GMeet API jika container baru restart atau belum tersimpan.
+ */
+async function ensureRecentMeetingArchives({ wantsToday = false, wantsYesterday = false } = {}) {
+  const now = new Date();
+  const todayWibStr = formatB15MFileDate(now);
+  const yesterdayWibStr = formatB15MFileDate(new Date(now.getTime() - 24 * 3600 * 1000));
+  const targetDateStr = wantsToday ? todayWibStr : (wantsYesterday ? yesterdayWibStr : null);
+
+  let existing = getMeetingArchives(15);
+  const alreadyHasRichTarget = targetDateStr
+    ? existing.some(a => a.dateWib === targetDateStr && hasRichSummaryContent(a))
+    : (existing.length > 0 && hasRichSummaryContent(existing[0]));
+
+  if (!alreadyHasRichTarget) {
+    try {
+      const recentZoom = await getRecentEndedMeetings(8);
+      const candidates = targetDateStr
+        ? recentZoom.filter(m => m.startTime && formatB15MFileDate(m.startTime) === targetDateStr)
+        : recentZoom.slice(0, 2);
+
+      for (const rm of candidates.slice(0, 2)) {
+        const rmDate = rm.startTime ? formatB15MFileDate(rm.startTime) : todayWibStr;
+        const cached = existing.find(a => String(a.id) === String(rm.id) && a.dateWib === rmDate);
+        if (cached && hasRichSummaryContent(cached)) continue;
+
+        const pastDetails = await getPastMeetingDetails(rm.id);
+        const participants = await getPastMeetingParticipants(rm.id);
+        const aiSummary = await getZoomMeetingSummary(rm.id);
+
+        const rawTopic = pastDetails?.topic || rm.topic || 'Zoom Meeting';
+        const effectiveStart = pastDetails?.startTime || rm.startTime || new Date().toISOString();
+        const isB15M = isB15MMeeting(rm, rawTopic, effectiveStart);
+        const cleanTopic = isB15M && /^meeting\s+zoom$|^zoom\s+meeting$|^my\s+meeting$/i.test(rawTopic.trim())
+          ? 'B15M - Fleet & Operations Sync (Meeting Zoom)'
+          : rawTopic;
+
+        let actionItems = [];
+        if (isB15M && aiSummary && (aiSummary.summaryOverview || aiSummary.summaryDetails?.length || aiSummary.nextSteps?.length)) {
+          try {
+            actionItems = await extractB15MActionItems({
+              topic: cleanTopic,
+              summaryOverview: aiSummary.summaryOverview,
+              summaryDetails: aiSummary.summaryDetails,
+              nextSteps: aiSummary.nextSteps
+            });
+          } catch (e) {
+            // Fallback tetap simpan summaryOverview / nextSteps
+          }
+        }
+
+        saveMeetingArchive({
+          id: rm.id,
+          platform: 'ZOOM',
+          topic: cleanTopic,
+          startTime: effectiveStart,
+          endTime: pastDetails?.endTime || '',
+          dateWib: rmDate,
+          duration: pastDetails?.duration || rm.duration || 0,
+          isB15M,
+          participants,
+          summaryTitle: aiSummary?.summaryTitle,
+          summaryOverview: aiSummary?.summaryOverview,
+          summaryDetails: aiSummary?.summaryDetails,
+          nextSteps: aiSummary?.nextSteps,
+          actionItems,
+          summaryDocUrl: aiSummary?.summaryDocUrl
+        });
+      }
+    } catch (zoomSyncErr) {
+      console.warn('⚠️ Gagal menyinkronkan arsip Zoom untuk Q&A:', zoomSyncErr.message);
+    }
+
+    existing = getMeetingArchives(15);
+    if (existing.length === 0) {
+      try {
+        const recentGMeet = await getRecentEndedGoogleMeetings(2);
+        for (const gm of recentGMeet) {
+          const pastDetails = await getGooglePastMeetingDetails(gm.spaceName || gm.id);
+          const participants = pastDetails?.conferenceRecordName
+            ? await getGoogleMeetingParticipants(pastDetails.conferenceRecordName)
+            : [];
+          const aiSummary = await getGoogleMeetingSummary(pastDetails?.conferenceRecordName || gm.spaceName || gm.id);
+          saveMeetingArchive({
+            id: gm.id || gm.spaceName,
+            platform: 'GMEET',
+            topic: pastDetails?.topic || gm.topic || 'Google Meet',
+            startTime: pastDetails?.startTime || gm.startTime || new Date().toISOString(),
+            endTime: pastDetails?.endTime || '',
+            duration: pastDetails?.duration || 0,
+            isB15M: false,
+            participants,
+            summaryTitle: aiSummary?.summaryTitle,
+            summaryOverview: aiSummary?.summaryOverview,
+            summaryDetails: aiSummary?.summaryDetails,
+            nextSteps: aiSummary?.nextSteps
+          });
+        }
+      } catch (gmErr) {
+        // Ignored
+      }
+    }
+  }
+
+  const all = getMeetingArchives(10);
+  if (targetDateStr) {
+    const matched = all.filter(a => a.dateWib === targetDateStr);
+    const others = all.filter(a => a.dateWib !== targetDateStr);
+    return [...matched, ...others];
+  }
+  return all;
+}
+
+/**
+ * Fallback deterministik jika Gemini Q&A tidak aktif / timeout.
+ */
+function formatMeetingQaFallback(qaCmd, archives = []) {
+  if (!archives || archives.length === 0) {
+    return `Mohon maaf Bapak/Ibu, saat ini belum ditemukan data ringkasan meeting terbaru di sistem maupun Zoom.\nCoba pastikan meeting sudah berakhir dan notula AI Zoom sudah tersedia.`;
+  }
+
+  const targetDateStr = qaCmd.wantsToday
+    ? formatB15MFileDate(new Date())
+    : (qaCmd.wantsYesterday ? formatB15MFileDate(new Date(Date.now() - 24 * 3600 * 1000)) : null);
+
+  const chosen = (targetDateStr && archives.find(a => a.dateWib === targetDateStr)) || archives[0];
+  const dateLabel = chosen.startTime ? formatB15MDate(parseToDate(chosen.startTime)) : chosen.dateWib;
+  const timeStr = chosen.startTime ? formatMeetingTime(chosen.startTime) : '-';
+
+  const lines = [
+    `📋 *RINGKASAN & FOLLOW-UP RAPAT*`,
+    `📌 *Topik:* ${chosen.topic || 'Meeting'}`,
+    `📅 *Tanggal:* ${dateLabel} (${timeStr})`,
+    ``
+  ];
+
+  if (qaCmd.asksWhoJoined && Array.isArray(chosen.participants) && chosen.participants.length > 0) {
+    lines.push(`👥 *Peserta Hadir (${chosen.participants.length} orang):*`);
+    lines.push(chosen.participants.slice(0, 30).join(', '));
+    lines.push(``);
+  }
+
+  if (qaCmd.asksDiscussion || !qaCmd.asksFollowUp) {
+    if (chosen.summaryOverview) {
+      lines.push(`📖 *Pembahasan Utama:*`);
+      lines.push(chosen.summaryOverview);
+      lines.push(``);
+    } else if (Array.isArray(chosen.summaryDetails) && chosen.summaryDetails.length > 0) {
+      lines.push(`📖 *Poin Pembahasan:*`);
+      chosen.summaryDetails.slice(0, 5).forEach((d, idx) => {
+        lines.push(`${idx + 1}. ${d.label ? `*${d.label}:* ` : ''}${d.summary}`);
+      });
+      lines.push(``);
+    }
+  }
+
+  if (qaCmd.asksFollowUp || !qaCmd.asksDiscussion) {
+    if (Array.isArray(chosen.actionItems) && chosen.actionItems.length > 0) {
+      const sorted = [...chosen.actionItems].sort((a, b) => {
+        const rank = p => /urgent/i.test(p || '') ? 0 : (/high/i.test(p || '') ? 1 : 2);
+        return rank(a.prioritas) - rank(b.prioritas);
+      });
+      lines.push(`⚡ *Daftar Follow-Up / Tindak Lanjut (${sorted.length} Item):*`);
+      sorted.slice(0, 12).forEach((it, idx) => {
+        const prio = it.prioritas ? `[${String(it.prioritas).toUpperCase()}] ` : '';
+        const kapal = it.kapal_proyek ? `*${it.kapal_proyek}* — ` : '';
+        const target = it.target_deadline ? ` _(${it.target_deadline})_` : '';
+        lines.push(`${idx + 1}. ${prio}${kapal}${it.isu_rangkuman}${target} — *PIC: ${it.pic || '-'}*`);
+      });
+      if (sorted.length > 12) {
+        lines.push(`_...dan ${sorted.length - 12} item lainnya di Excel B15M._`);
+      }
+      lines.push(``);
+    } else if (Array.isArray(chosen.nextSteps) && chosen.nextSteps.length > 0) {
+      lines.push(`⚡ *Tindak Lanjut / Follow-Up:*`);
+      chosen.nextSteps.slice(0, 12).forEach((s, idx) => lines.push(`${idx + 1}. ${s}`));
+      lines.push(``);
+    } else {
+      lines.push(`⏳ _Catatan AI (pembahasan & tindak lanjut) untuk rapat ini belum tersedia dari server Zoom._`);
+      lines.push(``);
+    }
+  }
+
+  lines.push(`💡 _Ketik *rekap b15m* atau *notula excel* jika ingin mengunduh file Excel lengkapnya._`);
+  return lines.join('\n');
 }
 
 /**
@@ -1516,11 +1778,12 @@ async function startBot() {
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
       if (isGroup && !isBotMentioned && !isVoiceNote && !isQuotedBot) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|b\s*15m|rekap|notula|notulan|notulensi|gratis|cadangan|free)/i.test(cleanText) ||
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|b\s*15m|rekap|notula|notulan|notulensi|follow\s*-?\s*up|tindak\s*lanjut|gratis|cadangan|free)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
                                   Boolean(parseEmptySlotsCommand(cleanText)) ||
                                   Boolean(parseFreeZoomCommand(cleanText)) ||
-                                  Boolean(parseSummaryCommand(cleanText));
+                                  Boolean(parseSummaryCommand(cleanText)) ||
+                                  Boolean(parseMeetingQaCommand(cleanText));
         if (!hasMeetingContext) {
           continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
         }
@@ -2090,6 +2353,46 @@ async function startBot() {
       }
 
       // -----------------------------------------------------------------------
+      // F2. TANYA-JAWAB ISI PEMBAHASAN & FOLLOW-UP RAPAT ("tadi meeting bahas apa?", "yang di follow up sekarang apa?")
+      // -----------------------------------------------------------------------
+      const qaCmd = parseMeetingQaCommand(cleanText);
+      if (qaCmd) {
+        console.log(`\n💬 [Tanya-Jawab Notula/Follow-Up] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+          const archives = await ensureRecentMeetingArchives({
+            wantsToday: qaCmd.wantsToday,
+            wantsYesterday: qaCmd.wantsYesterday
+          });
+
+          let qaReply = null;
+          if (isGeminiEnabled() && archives.length > 0) {
+            qaReply = await answerMeetingQuestion(cleanText, archives, {
+              senderName,
+              activeMeetings: getActiveMeetings(),
+              quotedText
+            });
+          }
+
+          if (!qaReply) {
+            qaReply = formatMeetingQaFallback(qaCmd, archives);
+          }
+
+          const finalReply = (isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n\n` : '') + qaReply;
+          await sock.sendMessage(remoteJid, { text: finalReply }, { quoted: msg });
+          recordChatTurn(remoteJid, 'user', senderName, cleanText);
+          recordChatTurn(remoteJid, 'bot', 'Bot', qaReply);
+          console.log(`✅ Jawaban Q&A notula & follow-up berhasil dikirim ke ${remoteJid}`);
+        } catch (qaErr) {
+          console.error('❌ Error memproses tanya-jawab notula rapat:', qaErr);
+          await sock.sendMessage(remoteJid, {
+            text: `Maaf Pak/Bu, terjadi kendala saat mengambil ringkasan rapat: ${qaErr.message}`
+          }, { quoted: msg });
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
       // F. CEK PERINTAH ZOOM CADANGAN / GRATISAN ("zoom gratisan", "zoom cadangan")
       // -----------------------------------------------------------------------
       const freeZoomCmd = parseFreeZoomCommand(cleanText);
@@ -2150,9 +2453,23 @@ async function startBot() {
         if (allowGemini) {
           try {
             console.log(`🤖 [Gemini AI Interaktif] Menganalisis pesan dari ${senderName} (${remoteJid}): "${cleanText}" (isQuotedBot: ${isQuotedBot})`);
+            recordChatTurn(remoteJid, 'user', senderName, cleanText);
+            let archives = getMeetingArchives(5);
+            if (
+              (archives.length === 0 || /(?:tadi|hari\s+ini|kemarin|kemaren|sekarang|seakrang|skrg)/i.test(cleanText)) &&
+              /(?:bahas|pembahasan|follow\s*-?\s*up|tindak\s*lanjut|notula|rekap|rapat|meeting|kemarin|tadi|urgent|pic|peserta|hadir|b15m)/i.test(cleanText)
+            ) {
+              archives = await ensureRecentMeetingArchives({
+                wantsToday: /(?:hari\s+ini|sekarang|seakrang|skrg|tadi|pagi\s+tadi)/i.test(cleanText),
+                wantsYesterday: /(?:kemarin|kemaren)/i.test(cleanText)
+              });
+            }
+
             const aiRes = await extractMeetingDetails(cleanText, senderName, {
               quotedText,
-              activeMeetings: getActiveMeetings()
+              activeMeetings: getActiveMeetings(),
+              recentArchives: archives,
+              recentHistory: chatTurnHistory.get(remoteJid) || []
             });
             if (aiRes) {
               if (aiRes.intent === 'CREATE_MEETING') {
@@ -2160,6 +2477,7 @@ async function startBot() {
                   await sock.readMessages([msg.key]);
                   const needInfoText = (isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n\n` : '') + aiRes.replyMessage;
                   await sock.sendMessage(remoteJid, { text: needInfoText }, { quoted: msg });
+                  recordChatTurn(remoteJid, 'bot', 'Bot', aiRes.replyMessage);
                   continue;
                 }
                 command = {
@@ -2175,6 +2493,7 @@ async function startBot() {
                 await sock.readMessages([msg.key]);
                 const replyText = (isVoiceNote ? `🎙️ _Pesan Suara: "${voiceTranscription}"_\n\n` : '') + aiRes.replyMessage;
                 await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+                recordChatTurn(remoteJid, 'bot', 'Bot', aiRes.replyMessage);
                 continue;
               }
             }

@@ -40,7 +40,44 @@ export function isGeminiEnabled() {
  *   replyMessage: string
  * }|null>}
  */
-export async function extractMeetingDetails(userMessage, senderName = '', { quotedText = '', activeMeetings = [] } = {}, timeoutMs = 8000) {
+/**
+ * Memformat daftar arsip notula & action items meeting terbaru menjadi konteks teks ringkas untuk Gemini AI.
+ */
+function formatArchivesForPrompt(archives = [], maxEntries = 3) {
+  if (!Array.isArray(archives) || archives.length === 0) return '';
+
+  return archives.slice(0, maxEntries).map((a, idx) => {
+    const waktu = formatMeetingTime(a.startTime);
+    const pesertaList = Array.isArray(a.participants) && a.participants.length > 0
+      ? `${a.participants.length} orang (${a.participants.slice(0, 25).join(', ')}${a.participants.length > 25 ? ', ...' : ''})`
+      : 'Tidak tercatat';
+
+    const detailLines = Array.isArray(a.summaryDetails) && a.summaryDetails.length > 0
+      ? a.summaryDetails.map(d => `   - ${d.label ? `[${d.label}] ` : ''}${d.summary}`).join('\n')
+      : '';
+
+    let followUpLines = '';
+    if (Array.isArray(a.actionItems) && a.actionItems.length > 0) {
+      followUpLines = a.actionItems.map((it, i) =>
+        `   ${i + 1}. [${it.prioritas || 'Medium'} | Target: ${it.target_deadline || 'IN PROGRESS'} | Status: ${it.status || 'On Progress'}] ${it.kapal_proyek ? `*${it.kapal_proyek}* - ` : ''}${it.isu_rangkuman} (PIC: ${it.pic || '-'})`
+      ).join('\n');
+    } else if (Array.isArray(a.nextSteps) && a.nextSteps.length > 0) {
+      followUpLines = a.nextSteps.map((s, i) => `   ${i + 1}. ${s}`).join('\n');
+    }
+
+    return [
+      `[ARSIP RAPAT #${idx + 1}]`,
+      `- Tanggal (WIB): ${a.dateWib || '-'} | Waktu: ${waktu} | Durasi: ${a.duration || 0} Menit`,
+      `- Topik: ${a.topic || '-'} | Platform: ${a.platform || 'ZOOM'} | ID: ${a.id}`,
+      `- Peserta Hadir: ${pesertaList}`,
+      a.summaryOverview ? `- Ringkasan Utama: ${a.summaryOverview}` : '',
+      detailLines ? `- Detail Pembahasan:\n${detailLines}` : '',
+      followUpLines ? `- Daftar Follow-Up / Action Items:\n${followUpLines}` : ''
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
+}
+
+export async function extractMeetingDetails(userMessage, senderName = '', { quotedText = '', activeMeetings = [], recentArchives = [], recentHistory = [] } = {}, timeoutMs = 15000) {
   if (!isGeminiEnabled()) return null;
 
   const ai = getAiClient();
@@ -53,6 +90,11 @@ export async function extractMeetingDetails(userMessage, senderName = '', { quot
     const requester = m.requesterPhone ? m.requesterPhone.split('@')[0] : 'Tidak tercatat';
     return `${idx + 1}. Topik: "${m.topic}", Platform: ${m.platform || 'ZOOM'}, Waktu: ${formatted}, Durasi: ${m.duration || 60} Menit, Nomor Pembuat: +${requester}, ID Meeting: ${m.id}, Link Join: ${m.joinUrl || '-'}${m.passcode ? `, Passcode: ${m.passcode}` : ''}`;
   }).join('\n');
+
+  const archivesText = formatArchivesForPrompt(recentArchives, 2);
+  const historyText = Array.isArray(recentHistory) && recentHistory.length > 0
+    ? recentHistory.map(h => `- ${h.role === 'bot' ? 'Bot' : (h.sender || 'User')}: ${String(h.text || '').slice(0, 250)}`).join('\n')
+    : '';
 
   const systemInstruction = `
 Kamu adalah Asisten Eksekutif Cerdas WhatsApp untuk penjadwalan meeting (Zoom Meeting & Google Meet).
@@ -91,7 +133,11 @@ Panduan Tugas:
      2) Akun Zoom Cadangan / Gratisan: Bisa digunakan jika tetap ingin Zoom (maksimal 40 menit per sesi, pengguna cukup mengetik "zoom gratisan" untuk mendapatkan link).
    - Jika pengguna bertanya tentang notula rapat, rekap kehadiran, B15M, atau ekspor file Excel (.xlsx):
      Ketahuilah bahwa sistem BOT SUDAH MEMILIKI fitur otomatis penyusunan Notula & File Excel (.xlsx) khusus rapat pagi B15M (jam 08:00 WIB atau judul B15M). JANGAN pernah menjawab bahwa fitur Excel belum tersedia! Arahkan pengguna mengetik "rekap b15m" atau "notula excel" untuk meminta ulang file Excel hari ini.
+   - Jika pengguna bertanya tentang isi pembahasan meeting sebelumnya/tadi, siapa yang hadir, atau daftar follow-up/tindak lanjut saat ini:
+     Gunakan HANYA data di bagian "ARSIP NOTULA & FOLLOW-UP RAPAT TERKINI" di bawah jika tersedia, dan jawab dengan poin-poin rapi (nama PIC, proyek/kapal, prioritas, deadline). Jika di arsip tidak ditemukan, sampaikan dengan jujur.
    - Jika pengguna hanya menyapa atau bertanya hal lain, jawab dengan ramah dan jelaskan bantuan yang dapat Anda berikan sebagai asisten penjadwalan.
+${archivesText ? `\nARSIP NOTULA & FOLLOW-UP RAPAT TERKINI:\n${archivesText}` : ''}
+${historyText ? `\nRIWAYAT PERCAKAPAN TERAKHIR DI CHAT INI:\n${historyText}` : ''}
 `.trim();
 
   let userContent = `Pesan dari pengguna ${senderName ? `(${senderName})` : ''}: "${userMessage}"`;
@@ -349,6 +395,77 @@ Tugas:
     return await Promise.race([callPromise, timeoutPromise]);
   } catch (error) {
     console.warn(`⚠️ Gemini Audio processing warning (${error.message}).`);
+    return null;
+  }
+}
+
+/**
+ * Menjawab pertanyaan pengguna seputar isi pembahasan rapat & daftar follow-up saat ini
+ * berdasarkan arsip notula AI (Zoom / Google Meet) dan action items B15M.
+ *
+ * @param {string} questionText
+ * @param {Array<object>} archives
+ * @param {object} options
+ * @param {number} timeoutMs
+ * @returns {Promise<string|null>}
+ */
+export async function answerMeetingQuestion(
+  questionText,
+  archives = [],
+  { senderName = '', activeMeetings = [], quotedText = '' } = {},
+  timeoutMs = 15000
+) {
+  if (!isGeminiEnabled() || !Array.isArray(archives) || archives.length === 0) {
+    return null;
+  }
+
+  const ai = getAiClient();
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+  const timeContext = getCurrentTimeContext();
+  const archivesText = formatArchivesForPrompt(archives, 3);
+
+  const meetingsSummary = (activeMeetings || []).slice(0, 5).map((m, idx) => {
+    const formatted = formatMeetingTime(m.startTime);
+    return `${idx + 1}. "${m.topic}" (${formatted})`;
+  }).join('\n');
+
+  const prompt = `Kamu adalah Asisten Notula & Operasional Rapat WhatsApp (BOT AI ZOOM - Seven Oceans).
+Waktu saat ini: ${timeContext.localString} (Tanggal WIB: ${timeContext.todayDate}).
+Penanya: ${senderName || 'Bapak/Ibu'}.
+${quotedText ? `Pesan yang dikutip penanya: "${quotedText}"\n` : ''}
+DATA ARSIP NOTULA & TINDAK LANJUT RAPAT:
+${archivesText}
+${meetingsSummary ? `\nJADWAL MEETING TERDAFTAR HARI INI/TERDEKAT:\n${meetingsSummary}\n` : ''}
+PERTANYAAN PENGGUNA:
+"${questionText}"
+
+ATURAN MENJAWAB:
+1. Jawab HANYA berdasarkan fakta di DATA ARSIP di atas. JANGAN mengarang topik, kapal, atau PIC yang tidak tertulis di data.
+2. Gunakan format WhatsApp ASLI yang rapi: pakai satu tanda bintang (*tebal*) dan _miring_. JANGAN memakai tanda ** (dua bintang) maupun heading ### markdown!
+3. Sebutkan tanggal & jam rapat yang dirujuk agar jelas.
+4. Jika pengguna menanyakan topik pembahasan ("bahas apa saja"), rangkum poin utama pembahasan per topik dengan bullet points.
+5. Jika pengguna menanyakan follow-up / tindak lanjut ("yang di follow up sekarang apa"), kelompokkan atau urutkan mulai dari prioritas tertinggi (*URGENT* / *HIGH* / tenggat *Hari Ini* atau jam terdekat), sebutkan tugas + nama *PIC* + *kapal/proyek*-nya.
+6. Jika pengguna menanyakan PIC, kapal, atau kehadiran tertentu, jawab spesifik sesuai data peserta / action items.
+7. Di bagian paling bawah boleh tambahkan 1 baris tips singkat: _"💡 Ketik *rekap b15m* atau *notula excel* jika ingin mengunduh file Excel lengkapnya."_
+8. Jika data untuk tanggal/topik yang diminta belum ada di arsip, jelaskan dengan jujur data mana yang saat ini tersedia.`;
+
+  const callPromise = (async () => {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: prompt
+    });
+    const txt = (response.text || '').trim();
+    return txt || null;
+  })();
+
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Gemini QA timeout (${timeoutMs}ms)`)), timeoutMs)
+  );
+
+  try {
+    return await Promise.race([callPromise, timeoutPromise]);
+  } catch (error) {
+    console.warn(`⚠️ Gemini Meeting Q&A warning (${error.message}):`, error.message);
     return null;
   }
 }

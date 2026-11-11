@@ -6,6 +6,7 @@ import { parseToDate, getDatePartsInTimezone, getNowInTimezone } from '../utils/
 const STORAGE_DIR = process.env.STORAGE_DIR || '.';
 const DATA_DIR = path.join(STORAGE_DIR, 'data');
 const MEETINGS_FILE = path.join(DATA_DIR, 'meetings.json');
+const ARCHIVES_FILE = path.join(DATA_DIR, 'meeting_archives.json');
 
 // Pastikan direktori dan file data tersedia
 function ensureFile() {
@@ -14,6 +15,13 @@ function ensureFile() {
   }
   if (!fs.existsSync(MEETINGS_FILE)) {
     fs.writeFileSync(MEETINGS_FILE, JSON.stringify([], null, 2), 'utf-8');
+  }
+}
+
+function ensureArchivesFile() {
+  ensureFile();
+  if (!fs.existsSync(ARCHIVES_FILE)) {
+    fs.writeFileSync(ARCHIVES_FILE, JSON.stringify([], null, 2), 'utf-8');
   }
 }
 
@@ -598,6 +606,93 @@ export function getAvailableTimeSlots(dayOffset = 0, timezone = process.env.DEFA
     booked: dayMeetings,
     free: freeIntervals
   };
+}
+
+/**
+ * Menyimpan / memperbarui arsip ringkasan notula & tindak lanjut meeting
+ * untuk kebutuhan tanya-jawab (Q&A) pembahasan dan follow-up lewat WhatsApp.
+ */
+export function saveMeetingArchive(entry = {}) {
+  if (!entry || !entry.id) return false;
+  ensureArchivesFile();
+  try {
+    const raw = fs.readFileSync(ARCHIVES_FILE, 'utf-8');
+    const list = JSON.parse(raw);
+    const id = String(entry.id).trim();
+    const startTime = entry.startTime || new Date().toISOString();
+    const parts = getDatePartsInTimezone(startTime, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
+    const dateWib = entry.dateWib || `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+
+    const existingIdx = list.findIndex(a => String(a.id) === id && a.dateWib === dateWib);
+    const prev = existingIdx >= 0 ? list[existingIdx] : {};
+
+    const cleanParticipants = Array.isArray(entry.participants) && entry.participants.length > 0
+      ? entry.participants.slice(0, 100).map(p => typeof p === 'string' ? p : (p.name || '')).filter(Boolean)
+      : (prev.participants || []);
+
+    const nextRecord = {
+      id,
+      platform: entry.platform || prev.platform || 'ZOOM',
+      topic: entry.topic || prev.topic || 'Meeting',
+      startTime,
+      endTime: entry.endTime || prev.endTime || '',
+      dateWib,
+      duration: Number(entry.duration) || prev.duration || 0,
+      isB15M: entry.isB15M !== undefined ? Boolean(entry.isB15M) : Boolean(prev.isB15M),
+      participants: cleanParticipants,
+      summaryTitle: entry.summaryTitle || prev.summaryTitle || '',
+      summaryOverview: entry.summaryOverview || prev.summaryOverview || '',
+      summaryDetails: Array.isArray(entry.summaryDetails) && entry.summaryDetails.length > 0
+        ? entry.summaryDetails
+        : (prev.summaryDetails || []),
+      nextSteps: Array.isArray(entry.nextSteps) && entry.nextSteps.length > 0
+        ? entry.nextSteps
+        : (prev.nextSteps || []),
+      actionItems: Array.isArray(entry.actionItems) && entry.actionItems.length > 0
+        ? entry.actionItems
+        : (prev.actionItems || []),
+      summaryDocUrl: entry.summaryDocUrl || prev.summaryDocUrl || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    if (existingIdx >= 0) {
+      list[existingIdx] = nextRecord;
+    } else {
+      list.push(nextRecord);
+    }
+
+    list.sort((a, b) => {
+      const ta = parseToDate(a.startTime || a.updatedAt).getTime() || 0;
+      const tb = parseToDate(b.startTime || b.updatedAt).getTime() || 0;
+      return tb - ta;
+    });
+
+    const trimmed = list.slice(0, 60);
+    fs.writeFileSync(ARCHIVES_FILE, JSON.stringify(trimmed, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('Gagal menyimpan arsip meeting:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Mengambil daftar arsip pembahasan & tindak lanjut meeting terbaru.
+ */
+export function getMeetingArchives(limit = 10, { dateWib = null } = {}) {
+  ensureArchivesFile();
+  try {
+    const raw = fs.readFileSync(ARCHIVES_FILE, 'utf-8');
+    let list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    if (dateWib) {
+      list = list.filter(a => a.dateWib === dateWib);
+    }
+    return list.slice(0, limit);
+  } catch (err) {
+    console.error('Gagal membaca arsip meeting:', err.message);
+    return [];
+  }
 }
 
 

@@ -623,7 +623,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
       return { isHelpCommand: true, trigger: 'group_mention' };
     }
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir)/i.test(lower);
     if (!hasSpecificAction) {
       // Biarkan pertanyaan/percakapan mengalir ke Gemini AI interaktif
       return null;
@@ -636,7 +636,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
                        /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
                        /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir)/i.test(lower);
 
     if (isGreeting && !hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'private_greeting' };
@@ -671,7 +671,7 @@ export function parseSummaryCommand(messageText) {
   }
 
   const wantsExcel = /\b(?:excel(?:nya)?|xlsx|spreadsheet|xlxs)\b/i.test(lower);
-  const hasNotulaWord = /\b(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan|laporan|absen(?:si)?|kehadiran|peserta|tindak\s*lanjut|action\s*item)\b/i.test(lower);
+  const hasNotulaWord = /\b(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan|laporan|absen(?:si)?)\b/i.test(lower);
   const hasSummaryWord = wantsExcel || hasNotulaWord;
   const wantsToday = /\b(?:sekarang|hari\s+ini|today|skrg|tgl\s*(?:ini|sekarang)|tanggal\s+(?:ini|sekarang))\b/i.test(lower);
 
@@ -814,6 +814,79 @@ export function parseFreeZoomCommand(messageText) {
   return {
     isFreeZoom: true,
     topic
+  };
+}
+
+/**
+ * Parsing pertanyaan Q&A seputar isi pembahasan meeting atau daftar follow-up / tindak lanjut.
+ * Contoh:
+ * - "di meeting tadi bahas apa saja dan yang di follow up sekarang apa"
+ * - "meeting pagi tadi bahas apa?"
+ * - "yang harus di follow up hari ini apa aja?"
+ * - "kemarin b15m bahas apa soal Kasumi?"
+ * - "tadi yang ikut meeting siapa saja?"
+ *
+ * @param {string} messageText
+ * @returns {{
+ *   isMeetingQaCommand: boolean,
+ *   asksDiscussion: boolean,
+ *   asksFollowUp: boolean,
+ *   asksWhoJoined: boolean,
+ *   wantsToday: boolean,
+ *   wantsYesterday: boolean,
+ *   query: string
+ * }|null}
+ */
+export function parseMeetingQaCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  // Jangan ambil alih jika ini perintah dokumen/rekap Excel, buat meeting, batal, edit, cek jadwal, atau free zoom
+  if (
+    parseSummaryCommand(text) ||
+    parseCancelCommand(text) ||
+    parseEditCommand(text) ||
+    parseListCommand(text) ||
+    parseEmptySlotsCommand(text) ||
+    parseFreeZoomCommand(text) ||
+    parseLiveRecordCommand(text) ||
+    parseEndMeetingCommand(text)
+  ) {
+    return null;
+  }
+
+  const looksLikeCreate =
+    /\b(?:buat(?:kan)?|buatin|bikin(?:in)?|jadwal(?:kan|in)?|pesan|booking)\s+(?:(?:aku|saya|kami|kita)\s+)?(?:link\s+|room\s+|ruang\s+)?(?:zoom|gmeet|google\s*meet|meet|meeting|miting)\b/i.test(lower);
+  if (looksLikeCreate) {
+    return null;
+  }
+
+  const hasMeetingWord = /\b(?:meeting(?:nya)?|miting(?:nya)?|rapat(?:nya)?|zoom(?:nya)?|gmeet|google\s*meet|b\s*-?15\s*m|pagi\s+tadi|tadi\s+pagi)\b/i.test(lower);
+  const asksDiscussion = /\b(?:bahas(?:an)?\s+apa|membahas\s+apa|ngebahas\s+apa|ngomongin\s+apa|dibahas|pembahasan(?:nya)?|topik(?:nya)?\s+apa|isi(?:nya)?\s+apa|hasil(?:nya)?\s+apa|kesimpulan(?:nya)?|poin(?:-poin)?(?:nya)?|agendanya\s+apa)\b/i.test(lower);
+  const asksFollowUp = /\b(?:follow\s*-?\s*up(?:nya)?|difollow\s*-?\s*up|di\s+follow\s*-?\s*up|tindak\s*lanjut(?:nya)?|ditindaklanjuti|action\s*item(?:s)?|yang\s+harus\s+(?:dikerjakan|ditindaklanjuti|dilakukan|diselesaikan)|tugas(?:nya)?|pekerjaan(?:nya)?|pr\s+(?:hari\s+ini|rapat|meeting|tadi)|deadline(?:nya)?)\b/i.test(lower);
+  const asksWhoJoined = /\b(?:siapa\s+(?:aja|saja)\s+(?:yang\s+)?(?:hadir|ikut|masuk|join|datang|absen)|yang\s+(?:hadir|ikut|masuk|join|datang|absen)\b[^.!?\n]{0,30}\bsiapa)\b/i.test(lower);
+  const hasQuestionIntent = /\b(?:apa|apa\s+aja|apa\s+saja|apaan|mana|siapa|bagaimana|gimana|gmn|berapa|sebutkan|tolong\s+jelaskan|ceritain|rangkumin)\b|[?]$/i.test(lower);
+
+  const wantsToday = /\b(?:hari\s+ini|sekarang|seakrang|skrg|skrang|today|tadi|barusan|pagi\s+ini|pagi\s+tadi|tadi\s+pagi)\b/i.test(lower);
+  const wantsYesterday = /\b(?:kemarin|kemaren)\b/i.test(lower);
+
+  const isMatched =
+    (hasMeetingWord && (asksDiscussion || asksFollowUp || asksWhoJoined)) ||
+    (asksFollowUp && hasQuestionIntent && (wantsToday || wantsYesterday || /\b(?:urgent|prioritas|b\s*-?15\s*m)\b/i.test(lower)));
+
+  if (!isMatched) {
+    return null;
+  }
+
+  return {
+    isMeetingQaCommand: true,
+    asksDiscussion,
+    asksFollowUp,
+    asksWhoJoined,
+    wantsToday,
+    wantsYesterday,
+    query: text
   };
 }
 
