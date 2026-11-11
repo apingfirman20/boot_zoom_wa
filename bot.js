@@ -80,7 +80,9 @@ import {
   generateB15MExcelBuffer,
   generateB15MCSV,
   formatB15MWhatsAppMessage,
-  getDefaultB15MActionItems
+  getDefaultB15MActionItems,
+  formatB15MFileDate,
+  formatB15MDate
 } from './src/services/b15m.js';
 
 import fs from 'fs';
@@ -567,12 +569,16 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
   // ---------------------------------------------------------------------------
   const isB15M = forceB15M || isB15MMeeting(meeting, topic, startTime);
   if (isB15M) {
-    console.log(`📋 [B15M] Memproses notula & pelacak khusus B15M untuk meeting ${meeting.id} (${topic})...`);
+    const b15mTopic = /^meeting\s+zoom$|^zoom\s+meeting$|^my\s+meeting$/i.test((topic || '').trim())
+      ? 'B15M - Fleet & Operations Sync (Meeting Zoom)'
+      : (topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)');
+
+    console.log(`📋 [B15M] Memproses notula & pelacak khusus B15M untuk meeting ${meeting.id} (${b15mTopic})...`);
 
     let actionItems = [];
     try {
       actionItems = await extractB15MActionItems({
-        topic,
+        topic: b15mTopic,
         summaryOverview: aiSummary?.summaryOverview,
         summaryDetails: aiSummary?.summaryDetails,
         nextSteps: aiSummary?.nextSteps
@@ -582,13 +588,14 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
       actionItems = getDefaultB15MActionItems();
     }
 
-    const meetingDate = startTime ? new Date(startTime) : new Date();
+    const meetingDate = startTime ? parseToDate(startTime) : new Date();
+    const fileDateStr = formatB15MFileDate(meetingDate);
     const b15mMsg = formatB15MWhatsAppMessage({
       meetingDate,
       timeRange,
       durationText,
       facilitator: 'Wajdi Hariyadi',
-      meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+      meetingTitle: b15mTopic,
       actionItems,
       actualParticipants: participants
     });
@@ -603,14 +610,11 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
           meetingDate,
           timeRange,
           facilitator: 'Wajdi Hariyadi',
-          meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+          meetingTitle: b15mTopic,
           actionItems,
           actualParticipants: participants
         });
 
-        const utc = meetingDate.getTime() + (meetingDate.getTimezoneOffset() * 60000);
-        const wib = new Date(utc + (3600000 * 7));
-        const fileDateStr = `${wib.getFullYear()}-${String(wib.getMonth() + 1).padStart(2, '0')}-${String(wib.getDate()).padStart(2, '0')}`;
         const fileName = `Notula_B15M_${fileDateStr}.xlsx`;
 
         await globalSock.sendMessage(targetPhone, {
@@ -626,21 +630,38 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
           meetingDate,
           timeRange,
           facilitator: 'Wajdi Hariyadi',
-          meetingTitle: topic || 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+          meetingTitle: b15mTopic,
           actionItems,
           actualParticipants: participants
         });
         await globalSock.sendMessage(targetPhone, {
           document: Buffer.from(csvContent, 'utf-8'),
           mimetype: 'text/csv',
-          fileName: `Notula_B15M.csv`
+          fileName: `Notula_B15M_${fileDateStr}.csv`
         });
       }
 
-      updateMeetingRecording(meeting.id, {
+      const aiReady = Boolean(aiSummary);
+      const updated = updateMeetingRecording(meeting.id, {
         summarySent: true,
-        aiSummarySent: true
+        aiSummarySent: aiReady
       });
+      if (!updated && !String(meeting.id).startsWith('B15M-')) {
+        saveScheduledMeeting({
+          meetingId: meeting.id,
+          platform: meeting.platform,
+          spaceName: meeting.spaceName || '',
+          topic: b15mTopic,
+          startTime: startTime || new Date().toISOString(),
+          duration: durationMinutes || 30,
+          joinUrl: '',
+          requesterPhone: targetPhone
+        });
+        updateMeetingRecording(meeting.id, {
+          summarySent: true,
+          aiSummarySent: aiReady
+        });
+      }
       return true;
     } catch (bSendErr) {
       console.error(`Gagal mengirim laporan B15M ke ${targetPhone}:`, bSendErr.message);
@@ -751,7 +772,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 async function sendAiSummaryNotification(meetingId, summaryObj = null) {
   if (!globalSock) return;
   const meeting = getScheduledMeetingById(meetingId);
-  const targetPhone = meeting?.requesterPhone || meeting?.recordRequesterPhone;
+  const targetPhone = meeting?.requesterPhone || meeting?.recordRequesterPhone || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE;
   if (!targetPhone) return;
 
   // Jika sudah dikirimkan, jangan kirim ulang agar tidak dobel
@@ -786,15 +807,37 @@ async function sendAiSummaryNotification(meetingId, summaryObj = null) {
     return;
   }
 
+  let pastDetails = null;
+  if (!isGMeet) {
+    try {
+      pastDetails = await getPastMeetingDetails(meetingId);
+    } catch (e) {
+      // Ignored
+    }
+  }
+
   const defaultTopic = isGMeet ? 'Google Meet' : 'Zoom Meeting';
-  const topic = meeting?.topic || aiSummary.summaryTitle || defaultTopic;
+  const topic = pastDetails?.topic || meeting?.topic || aiSummary.summaryTitle || defaultTopic;
+  const effectiveStartTime = pastDetails?.startTime || summaryObj?.start_time || meeting?.startTime || null;
 
   // Jika meeting tergolong B15M, kirim/perbarui notula & file Excel B15M
-  if (isB15MMeeting(meeting, topic, meeting?.startTime)) {
+  if (isB15MMeeting(meeting, topic, effectiveStartTime)) {
     console.log(`🤖 [B15M] Notula AI untuk B15M telah siap, menyusun laporan & file Excel khusus...`);
-    const ok = await sendMeetingEndedSummary(meetingId, null, targetPhone, true);
+    const ok = await sendMeetingEndedSummary(meetingId, pastDetails, targetPhone, true);
     if (ok) {
-      updateMeetingRecording(meetingId, { aiSummarySent: true });
+      const updated = updateMeetingRecording(meetingId, { aiSummarySent: true, summarySent: true });
+      if (!updated && !String(meetingId).startsWith('B15M-')) {
+        saveScheduledMeeting({
+          meetingId,
+          platform: isGMeet ? 'GMEET' : 'ZOOM',
+          topic,
+          startTime: effectiveStartTime || new Date().toISOString(),
+          duration: pastDetails?.duration || 30,
+          joinUrl: '',
+          requesterPhone: targetPhone
+        });
+        updateMeetingRecording(meetingId, { aiSummarySent: true, summarySent: true });
+      }
       return;
     }
   }
@@ -1473,10 +1516,11 @@ async function startBot() {
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
       if (isGroup && !isBotMentioned && !isVoiceNote && !isQuotedBot) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|rekap|notula|notulen|gratis|cadangan|free)/i.test(cleanText) ||
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|b\s*15m|rekap|notula|notulan|notulensi|gratis|cadangan|free)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
                                   Boolean(parseEmptySlotsCommand(cleanText)) ||
-                                  Boolean(parseFreeZoomCommand(cleanText));
+                                  Boolean(parseFreeZoomCommand(cleanText)) ||
+                                  Boolean(parseSummaryCommand(cleanText));
         if (!hasMeetingContext) {
           continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
         }
@@ -1931,48 +1975,94 @@ async function startBot() {
       // -----------------------------------------------------------------------
       const summaryCmd = parseSummaryCommand(cleanText);
       if (summaryCmd) {
-        console.log(`\n📊 [Perintah Rekap/Summary Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}" (isB15M: ${Boolean(summaryCmd.isB15M)})`);
+        console.log(`\n📊 [Perintah Rekap/Summary Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}" (isB15M: ${Boolean(summaryCmd.isB15M)}, wantsToday: ${Boolean(summaryCmd.wantsToday)})`);
         try {
           await sock.readMessages([msg.key]);
 
           let targetMeetingId = summaryCmd.meetingId;
           const isB15M = Boolean(summaryCmd.isB15M);
+          const wantsExcel = Boolean(summaryCmd.wantsExcel);
+          const wantsToday = Boolean(summaryCmd.wantsToday);
+          const todayWibStr = formatB15MFileDate(new Date());
 
           if (isB15M && !targetMeetingId) {
-            const activeList = getActiveMeetings();
-            const b15mCandidate = activeList.find(m => isB15MMeeting(m, m.topic, m.startTime));
-            if (b15mCandidate) {
-              targetMeetingId = b15mCandidate.spaceName || b15mCandidate.id;
+            const recent = await getRecentEndedMeetings(15);
+            const todayEnded = recent.filter(m => m.startTime && formatB15MFileDate(m.startTime) === todayWibStr);
+
+            let b15mRecent = todayEnded.find(m => isB15MMeeting(m, m.topic, m.startTime));
+            if (!b15mRecent && (wantsExcel || wantsToday) && todayEnded.length > 0) {
+              const morningToday = todayEnded.find(m => {
+                const p = getDatePartsInTimezone(m.startTime, 'Asia/Jakarta');
+                return p.hour < 12;
+              });
+              b15mRecent = morningToday || todayEnded[0];
+            }
+
+            if (b15mRecent) {
+              targetMeetingId = b15mRecent.id;
             } else {
-              const recent = await getRecentEndedMeetings(5);
-              const b15mRecent = recent.find(m => isB15MMeeting(m, m.topic, m.start_time || m.startTime));
-              if (b15mRecent) {
-                targetMeetingId = b15mRecent.id;
+              const nowMs = Date.now();
+              const activeList = getActiveMeetings();
+              const todayActiveB15M = activeList.find(m => {
+                if (!m.startTime || formatB15MFileDate(m.startTime) !== todayWibStr) return false;
+                const startMs = parseToDate(m.startTime).getTime();
+                return nowMs >= startMs && isB15MMeeting(m, m.topic, m.startTime);
+              });
+              if (todayActiveB15M) {
+                targetMeetingId = todayActiveB15M.spaceName || todayActiveB15M.id;
+              } else if (!wantsToday) {
+                const latestB15M = recent.find(m => isB15MMeeting(m, m.topic, m.startTime));
+                if (latestB15M) {
+                  targetMeetingId = latestB15M.id;
+                }
               }
             }
-            // Jika tidak ada meeting Zoom terdaftar, gunakan ID virtual B15M hari ini
+
+            if (!targetMeetingId && wantsToday) {
+              const noTodayMsg = `Mohon maaf Bapak/Ibu, belum ada rapat Zoom yang tercatat selesai untuk tanggal hari ini (*${formatB15MDate(new Date())}*).`;
+              await sock.sendMessage(remoteJid, { text: noTodayMsg }, { quoted: msg });
+              continue;
+            }
+
             if (!targetMeetingId) {
-              targetMeetingId = `B15M-${new Date().toISOString().slice(0, 10)}`;
+              targetMeetingId = `B15M-${todayWibStr}`;
             }
           }
 
           if (!targetMeetingId) {
-            const activeList = getActiveMeetings();
-            const lastMeeting = activeList[activeList.length - 1];
-            if (lastMeeting) {
-              targetMeetingId = lastMeeting.spaceName || lastMeeting.id;
-            }
-          }
-          if (!targetMeetingId) {
-            const recent = await getRecentEndedMeetings(1);
-            if (recent.length > 0) {
-              targetMeetingId = recent[0].id;
-            }
-          }
-          if (!targetMeetingId) {
-            const recentGMeet = await getRecentEndedGoogleMeetings(1);
-            if (recentGMeet.length > 0) {
-              targetMeetingId = recentGMeet[0].spaceName || recentGMeet[0].id;
+            const recent = await getRecentEndedMeetings(10);
+            const todayEnded = recent.filter(m => m.startTime && formatB15MFileDate(m.startTime) === todayWibStr);
+
+            if (wantsToday) {
+              if (todayEnded.length > 0) {
+                const b15mToday = todayEnded.find(m => isB15MMeeting(m, m.topic, m.startTime));
+                targetMeetingId = (b15mToday || todayEnded[0]).id;
+              } else {
+                const recentGMeet = await getRecentEndedGoogleMeetings(5);
+                const todayGMeet = recentGMeet.find(gm => gm.startTime && formatB15MFileDate(gm.startTime) === todayWibStr);
+                if (todayGMeet) {
+                  targetMeetingId = todayGMeet.spaceName || todayGMeet.id;
+                }
+              }
+            } else {
+              if (todayEnded.length > 0) {
+                targetMeetingId = todayEnded[0].id;
+              } else if (recent.length > 0) {
+                targetMeetingId = recent[0].id;
+              } else {
+                const nowMs = Date.now();
+                const startedActive = getActiveMeetings().filter(m => m.startTime && nowMs >= parseToDate(m.startTime).getTime());
+                const lastMeeting = startedActive[startedActive.length - 1];
+                if (lastMeeting) {
+                  targetMeetingId = lastMeeting.spaceName || lastMeeting.id;
+                }
+              }
+              if (!targetMeetingId) {
+                const recentGMeet = await getRecentEndedGoogleMeetings(1);
+                if (recentGMeet.length > 0) {
+                  targetMeetingId = recentGMeet[0].spaceName || recentGMeet[0].id;
+                }
+              }
             }
           }
 

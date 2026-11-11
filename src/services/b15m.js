@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import { GoogleGenAI } from '@google/genai';
-import { formatMeetingTime } from '../utils/datetime.js';
+import { formatMeetingTime, getDatePartsInTimezone, parseToDate } from '../utils/datetime.js';
 
 /**
  * Daftar pembagian anggota tim per divisi untuk rapat harian B15M Seven Oceans.
@@ -50,22 +50,33 @@ export const B15M_SHIP_REFERENCE = [
 
 /**
  * Memeriksa apakah suatu meeting tergolong B15M (Fleet & Operations Sync pukul 08:00 WIB).
+ * Cocok jika judul mengandung "B15M" ATAU merupakan meeting Zoom yang dimulai sekitar pukul 08:00 WIB (07:30 - 08:45 WIB),
+ * meskipun topiknya generik seperti "Meeting Zoom" atau "My Meeting".
  */
 export function isB15MMeeting(meeting, topic = '', startTime = null) {
   const combined = `${meeting?.topic || ''} ${topic || ''}`.toLowerCase();
-  if (/b15m|b 15 m|b-15m|b 15m/i.test(combined)) {
+  if (/\bb15m\b|b 15 m|b-15m|b 15m/i.test(combined)) {
     return true;
   }
 
-  // Cek jam pelaksanaan: jika pukul 08:00 WIB (antara 07:40 - 08:45 WIB)
+  // Kecualikan Google Meet dari pemicu jam 08:00 otomatis kecuali judulnya secara eksplisit menyebut B15M
+  const isGMeet = meeting?.platform === 'GMEET' ||
+                  String(meeting?.id || '').includes('-') ||
+                  String(meeting?.id || '').startsWith('spaces/') ||
+                  /google\s*meet/i.test(combined);
+  if (isGMeet) {
+    return false;
+  }
+
+  // Cek jam pelaksanaan Zoom dalam Asia/Jakarta (WIB): pukul 07:30 - 08:45 WIB otomatis tergolong B15M
   const dtStr = startTime || meeting?.startTime;
   if (dtStr) {
-    const dt = new Date(dtStr);
+    const dt = parseToDate(dtStr, 'Asia/Jakarta');
     if (!isNaN(dt.getTime())) {
-      const wibHour = (dt.getUTCHours() + 7) % 24;
-      const wibMin = dt.getUTCMinutes();
-      const isAround08 = (wibHour === 8) || (wibHour === 7 && wibMin >= 40);
-      if (isAround08 && /sync|briefing|fleet|armada|operasional|operasi|pagi|rapat/i.test(combined)) {
+      const parts = getDatePartsInTimezone(dt, 'Asia/Jakarta');
+      const totalMinutes = (parts.hour * 60) + parts.minute;
+      const isAround08 = totalMinutes >= (7 * 60 + 30) && totalMinutes <= (8 * 60 + 45);
+      if (isAround08) {
         return true;
       }
     }
@@ -75,32 +86,36 @@ export function isB15MMeeting(meeting, topic = '', startTime = null) {
 }
 
 /**
- * Format tanggal dalam bahasa Indonesia untuk B15M (contoh: "Selasa, 10 November 2026").
+ * Mengonversi Date/ISO menjadi format tanggal file YYYY-MM-DD dalam timezone Asia/Jakarta (WIB).
  */
-export function formatB15MDate(dateObj = new Date()) {
-  const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-  const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-  
-  // Convert ke WIB
-  const utc = dateObj.getTime() + (dateObj.getTimezoneOffset() * 60000);
-  const wibDate = new Date(utc + (3600000 * 7));
-
-  const dayName = days[wibDate.getDay()];
-  const day = wibDate.getDate();
-  const monthName = months[wibDate.getMonth()];
-  const year = wibDate.getFullYear();
-
-  return `${dayName}, ${day} ${monthName} ${year}`;
+export function formatB15MFileDate(dateInput = new Date()) {
+  const parts = getDatePartsInTimezone(dateInput, 'Asia/Jakarta');
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 }
 
 /**
- * Format nama sheet (contoh: "10 Nov").
+ * Format tanggal dalam bahasa Indonesia untuk B15M dalam WIB (contoh: "Rabu, 11 November 2026").
  */
-export function formatB15MSheetName(dateObj = new Date()) {
+export function formatB15MDate(dateInput = new Date()) {
+  const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+  const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+  const parts = getDatePartsInTimezone(dateInput, 'Asia/Jakarta');
+  const utcDay = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+
+  const dayName = days[utcDay];
+  const monthName = months[parts.month - 1];
+
+  return `${dayName}, ${parts.day} ${monthName} ${parts.year}`;
+}
+
+/**
+ * Format nama sheet Excel dalam WIB (contoh: "11 Nov").
+ */
+export function formatB15MSheetName(dateInput = new Date()) {
   const shortMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-  const utc = dateObj.getTime() + (dateObj.getTimezoneOffset() * 60000);
-  const wibDate = new Date(utc + (3600000 * 7));
-  return `${wibDate.getDate()} ${shortMonths[wibDate.getMonth()]}`;
+  const parts = getDatePartsInTimezone(dateInput, 'Asia/Jakarta');
+  return `${parts.day} ${shortMonths[parts.month - 1]}`;
 }
 
 /**
@@ -108,17 +123,30 @@ export function formatB15MSheetName(dateObj = new Date()) {
  */
 export function mapB15MAttendance(actualParticipants = []) {
   const attendance = {};
-  const actualNames = actualParticipants.map(p => (p.name || '').toLowerCase());
+  const normalizeSpaces = (s) => String(s || '').toLowerCase().replace(/[.\s]+/g, ' ').trim();
+  const compactStr = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const actualNormalized = actualParticipants.map(p => ({
+    raw: (p.name || '').toLowerCase(),
+    norm: normalizeSpaces(p.name || ''),
+    compact: compactStr(p.name || '')
+  })).filter(a => a.compact.length > 0);
 
   for (const [division, members] of Object.entries(B15M_ROSTER)) {
-    if (actualNames.length === 0) {
+    if (actualNormalized.length === 0) {
       attendance[division] = members.join(', ');
     } else {
-      // Tandai yang hadir vs yang rostered
       const list = members.map(m => {
-        const cleanM = m.replace(/\s*\([^)]*\)/g, '').toLowerCase().trim();
-        const firstM = cleanM.split(' ')[0];
-        const isPresent = actualNames.some(a => a.includes(cleanM) || (firstM.length > 2 && a.includes(firstM)));
+        const cleanM = m.replace(/\s*\([^)]*\)/g, '').trim();
+        const compactM = compactStr(cleanM);
+        const normTokens = normalizeSpaces(cleanM).split(' ').filter(t => t.length >= 3);
+        const primaryToken = normTokens[0] || '';
+
+        const isPresent = actualNormalized.some(a =>
+          (compactM.length >= 3 && a.compact.includes(compactM)) ||
+          (a.compact.length >= 4 && compactM.includes(a.compact)) ||
+          (primaryToken.length >= 4 && a.norm.split(' ').some(w => w === primaryToken || w.startsWith(primaryToken)))
+        );
         return isPresent ? `${m} (Hadir)` : m;
       });
       attendance[division] = list.join(', ');
@@ -126,6 +154,87 @@ export function mapB15MAttendance(actualParticipants = []) {
   }
 
   return attendance;
+}
+
+/**
+ * Menyusun action items secara dinamis langsung dari nextSteps / summaryDetails Zoom AI
+ * apabila ekstraksi LLM gagal, agar konten tetap berasal dari rapat hari tersebut.
+ */
+function buildDynamicActionItemsFromSummary({ topic, summaryOverview, summaryDetails = [], nextSteps = [] }) {
+  const inferDept = (text) => {
+    const lower = String(text || '').toLowerCase();
+    if (/(?:basyarudin|eko|okvin|pompa|mesin|bbm|bunker|perbaikan|suku\s*cadang|teknis|teknikal|cat\b|dock)/i.test(lower)) {
+      return { departemen: 'Technical', dept_group: 'DEPARTEMEN TEKNIKAL & PERAWATAN' };
+    }
+    if (/(?:artikan|sertifikat|clc|wrc|sopal|legal|agen|tuban|pda\b|rpk|spp|huanye|angeline|kasumi)/i.test(lower)) {
+      return { departemen: 'SOPAL', dept_group: 'DEPARTEMEN SOPAL & LEGAL' };
+    }
+    if (/(?:herindra|wawancara|kandidat|rekrut|kru|crew|mualim|sds|brosur)/i.test(lower)) {
+      return { departemen: 'Crewing', dept_group: 'DEPARTEMEN CREWING & FINANCE' };
+    }
+    if (/(?:keuangan|finance|premi|faktur|invoice|pembayaran|bayar|kutipan|quote|uang)/i.test(lower)) {
+      return { departemen: 'Finance', dept_group: 'DEPARTEMEN CREWING & FINANCE' };
+    }
+    return { departemen: 'Operasi & Logistik', dept_group: 'DEPARTEMEN OPERASI & LOGISTIK' };
+  };
+
+  const items = [];
+  if (Array.isArray(nextSteps) && nextSteps.length > 0) {
+    for (const step of nextSteps) {
+      const str = String(step || '').trim();
+      if (!str) continue;
+      const colonIdx = str.indexOf(':');
+      const pic = colonIdx > 0 && colonIdx < 40 ? str.slice(0, colonIdx).trim() : 'Tim Operasional';
+      const task = colonIdx > 0 && colonIdx < 40 ? str.slice(colonIdx + 1).trim() : str;
+      const dept = inferDept(`${pic} ${task}`);
+      const isUrgent = /(?:mendesak|urgent|sebelum\s+pukul|hari\s+ini|besok|segera)/i.test(task);
+
+      items.push({
+        status: 'On Progress',
+        prioritas: isUrgent ? 'HIGH' : 'Medium',
+        target_deadline: /hari\s+ini|sebelum\s+pukul/i.test(task) ? 'HARI INI' : 'IN PROGRESS',
+        kapal_proyek: topic || 'Koordinasi Operasional B15M',
+        isu_rangkuman: task,
+        pic,
+        progres: 0.0,
+        departemen: dept.departemen,
+        dept_group: dept.dept_group
+      });
+    }
+  }
+
+  if (items.length === 0 && Array.isArray(summaryDetails) && summaryDetails.length > 0) {
+    for (const d of summaryDetails) {
+      const dept = inferDept(`${d.label} ${d.summary}`);
+      items.push({
+        status: 'On Progress',
+        prioritas: 'Medium',
+        target_deadline: 'IN PROGRESS',
+        kapal_proyek: d.label || topic || 'Pembahasan B15M',
+        isu_rangkuman: d.summary,
+        pic: 'Tim Terkait',
+        progres: 0.0,
+        departemen: dept.departemen,
+        dept_group: dept.dept_group
+      });
+    }
+  }
+
+  if (items.length === 0 && summaryOverview) {
+    items.push({
+      status: 'On Progress',
+      prioritas: 'Medium',
+      target_deadline: 'IN PROGRESS',
+      kapal_proyek: topic || 'Ringkasan Rapat B15M',
+      isu_rangkuman: String(summaryOverview).trim(),
+      pic: 'Tim Operasional',
+      progres: 0.0,
+      departemen: 'Operasi & Logistik',
+      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
+    });
+  }
+
+  return items;
 }
 
 /**
@@ -141,14 +250,26 @@ export async function extractB15MActionItems({ topic, summaryOverview, summaryDe
     transcript ? `Transkripsi:\n${transcript.slice(0, 5000)}` : ''
   ].filter(Boolean).join('\n\n');
 
-  if (!contextText.trim() || !process.env.GEMINI_API_KEY) {
+  if (!contextText.trim()) {
     return getDefaultB15MActionItems();
   }
 
-  try {
+  const hasRichSummary = Boolean(
+    (summaryOverview && String(summaryOverview).trim()) ||
+    (Array.isArray(summaryDetails) && summaryDetails.length > 0) ||
+    (Array.isArray(nextSteps) && nextSteps.length > 0) ||
+    (transcript && String(transcript).trim())
+  );
+
+  if (!hasRichSummary) {
+    return getDefaultB15MActionItems();
+  }
+
+  if (process.env.GEMINI_API_KEY) {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     const prompt = `Anda adalah Asisten Notulis Profesional & Notula Tracker B15M (Fleet & Operations Sync Seven Oceans).
-Tugas Anda adalah membaca rangkuman rapat B15M berikut dan menyusun daftar Action Items / Tindak Lanjut terperinci dalam format JSON Array.
+Tugas Anda adalah membaca rangkuman rapat B15M HARI INI berikut dan menyusun daftar Action Items / Tindak Lanjut terperinci dalam format JSON Array.
+PENTING: Gunakan HANYA fakta, nama kapal/proyek, PIC, dan isu yang tertulis di "Konteks Rapat B15M" di bawah ini. JANGAN mengarang atau menyalin isu dari rapat hari lain yang tidak ada dalam konteks!
 
 Kategori Departemen yang diakui:
 1. "DEPARTEMEN OPERASI & LOGISTIK"
@@ -162,209 +283,81 @@ Kategori Departemen yang diakui:
 Untuk setiap tindak lanjut yang dibahas, tentukan:
 - "status": "On Progress" | "Open" | "Done" | "Pending"
 - "prioritas": "Urgent" | "HIGH" | "Medium" | "Low"
-- "target_deadline": "URGENT" | "MONITOR" | "IN PROGRESS" | "HARI INI" | "BESOK PAGI" | "SEBELUM ONBOARD" atau tanggal
-- "kapal_proyek": Nama kapal (misal: "DP 17 (Jaya Perkasa 17)", "Wandao 2", "TB PSL Carol", "Sea Safe 008", "Tongkang Manjiletung") atau nama proyek/isu
-- "isu_rangkuman": Uraian jelas pembahasan masalah & instruksi tindak lanjut
-- "pic": Nama PIC dan divisi (misal: "Agung (Operasional)", "Capt. Edi (Operasional)", "Eko Wicaksono (Technical)", "Okvin Abrianto (Technical)", "Herindra (Crewing)", "W. Hariyadi", "Artikan (SOPAL)", "Team Purchasing")
+- "target_deadline": "URGENT" | "MONITOR" | "IN PROGRESS" | "HARI INI" | "BESOK PAGI" | "SEBELUM ONBOARD" atau jam/tanggal sesuai pembahasan
+- "kapal_proyek": Nama kapal atau proyek/isu yang benar-benar disebut dalam konteks rapat ini
+- "isu_rangkuman": Uraian jelas pembahasan masalah & instruksi tindak lanjut (dalam Bahasa Indonesia yang rapi)
+- "pic": Nama PIC dan divisi sesuai konteks rapat
 - "progres": Nilai desimal progres antara 0.0 sampai 1.0 (misal 0.0, 0.25, 0.5, 0.75, 1.0)
-- "departemen": Salah satu nama departemen di atas (tanpa kata "DEPARTEMEN", misal: "Operasi & Logistik", "Technical", "SOPAL", "Crewing", "Finance", "SOTS", "Procurement")
+- "departemen": Salah satu nama singkat ("Operasi & Logistik", "Technical", "SOPAL", "Crewing", "Finance", "SOTS", "Procurement", "PBS")
 - "dept_group": Nama kelompok header ("DEPARTEMEN OPERASI & LOGISTIK", "DEPARTEMEN TEKNIKAL & PERAWATAN", "DEPARTEMEN SOPAL & LEGAL", "DEPARTEMEN CREWING & FINANCE", dll.)
 
 Konteks Rapat B15M:
 ${contextText}
 
-Balas HANYA dengan JSON array valid:
-[
-  {
-    "status": "On Progress",
-    "prioritas": "HIGH",
-    "target_deadline": "URGENT",
-    "kapal_proyek": "DP 17 (Jaya Perkasa 17)",
-    "isu_rangkuman": "Mencari peluang kargo aktif sehubungan kapal saat ini standby.",
-    "pic": "Capt. Edi (Operasional)",
-    "progres": 0.0,
-    "departemen": "Operasi & Logistik",
-    "dept_group": "DEPARTEMEN OPERASI & LOGISTIK"
-  }
-]`;
+Balas HANYA dengan JSON array valid tanpa markdown code block.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json'
+    const modelCandidates = Array.from(new Set([
+      process.env.GEMINI_MODEL,
+      'gemini-3.5-flash-lite',
+      'gemini-3.8-flash'
+    ].filter(Boolean)));
+
+    for (const modelName of modelCandidates) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json'
+          }
+        });
+
+        let rawText = (response.text || '').trim();
+        rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+        const parsed = JSON.parse(rawText);
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(item => ({
+            status: item.status || 'On Progress',
+            prioritas: item.prioritas || 'Medium',
+            target_deadline: item.target_deadline || 'IN PROGRESS',
+            kapal_proyek: item.kapal_proyek || 'Koordinasi Operasional',
+            isu_rangkuman: item.isu_rangkuman || '',
+            pic: item.pic || 'Tim Terkait',
+            progres: Number.isFinite(Number(item.progres)) ? Math.max(0, Math.min(1, Number(item.progres))) : 0.0,
+            departemen: item.departemen || 'Operasi & Logistik',
+            dept_group: item.dept_group || `DEPARTEMEN ${String(item.departemen || 'OPERASI & LOGISTIK').toUpperCase()}`
+          })).filter(i => i.isu_rangkuman);
+        }
+      } catch (err) {
+        console.warn(`⚠️ Gagal ekstrak B15M action items dengan model ${modelName}:`, err.message);
       }
-    });
-
-    const parsed = JSON.parse(response.text);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
     }
-  } catch (err) {
-    console.warn('Gagal mengekstrak B15M action items via AI, menggunakan fallback template:', err.message);
+  }
+
+  const dynamicItems = buildDynamicActionItemsFromSummary({ topic, summaryOverview, summaryDetails, nextSteps });
+  if (dynamicItems.length > 0) {
+    return dynamicItems;
   }
 
   return getDefaultB15MActionItems();
 }
 
 /**
- * Fallback action items B15M berdasarkan isu operasional armada Seven Oceans.
+ * Fallback apabila Zoom AI Companion belum menghasilkan ringkasan / detail rapat sama sekali.
  */
 export function getDefaultB15MActionItems() {
   return [
     {
-      status: 'On Progress',
-      prioritas: 'Urgent',
-      target_deadline: 'MONITOR',
-      kapal_proyek: 'Tongkang / Proyek Manjiletung',
-      isu_rangkuman: 'Pemeriksaan dermaga di Manjiletung untuk memastikan kesiapan akomodasi pemuatan sisi panjang kargo ban bekas.',
-      pic: 'Agung (Operasional)',
-      progres: 0.0,
-      departemen: 'Operasi & Logistik',
-      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
-    },
-    {
-      status: 'On Progress',
+      status: 'Pending',
       prioritas: 'Medium',
-      target_deadline: 'IN PROGRESS',
-      kapal_proyek: 'Dermaga Manjiletung',
-      isu_rangkuman: 'Mencari referensi dan data historis/informasi teknis pemuatan di Manjiletung guna mencegah kendala operasional.',
-      pic: 'Agung (Operasional)',
-      progres: 0.25,
-      departemen: 'Operasi & Logistik',
-      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'URGENT',
-      kapal_proyek: 'DP 17 (Jaya Perkasa 17)',
-      isu_rangkuman: 'Mencari peluang kargo untuk armada DP 17 sehubungan saat ini belum ada nominasi kargo aktif.',
-      pic: 'Capt. Edi (Operasional)',
-      progres: 0.0,
-      departemen: 'Operasi & Logistik',
-      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'BESOK PAGI',
-      kapal_proyek: 'Armada Makassar',
-      isu_rangkuman: 'Pengaturan jadwal survei vendor dan survei tahunan BKI untuk kapal yang dijadwalkan tiba di Makassar besok pagi.',
-      pic: 'Capt. Edi & Tim Operasional',
-      progres: 0.5,
-      departemen: 'Operasi & Logistik',
-      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'Medium',
-      target_deadline: 'IN PROGRESS',
-      kapal_proyek: 'Armada Sewa Makassar',
-      isu_rangkuman: 'Meminta persetujuan (approval) manajemen/prinsipal untuk kapal sewa di area Makassar.',
-      pic: 'W. Hariyadi',
-      progres: 0.25,
-      departemen: 'Operasi & Logistik',
-      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
       target_deadline: 'MONITOR',
-      kapal_proyek: 'Wandao 2 (Wondero Two)',
-      isu_rangkuman: 'Tindak lanjut perbaikan kendala mesin (engine issue) pada kapal Wandao 2 dan koordinasi suku cadang.',
-      pic: 'Capt. Edi & Tim Teknis',
+      kapal_proyek: 'Notula Zoom AI Rapat B15M',
+      isu_rangkuman: 'Ringkasan detail pembahasan & next steps dari Zoom AI Companion belum tersedia / masih diproses untuk sesi rapat ini. Kehadiran peserta sudah terekam pada header absensi.',
+      pic: 'Host / PIC Rapat',
       progres: 0.0,
-      departemen: 'Technical',
-      dept_group: 'DEPARTEMEN TEKNIKAL & PERAWATAN'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'Urgent',
-      target_deadline: 'URGENT',
-      kapal_proyek: 'TB PSL Carol',
-      isu_rangkuman: 'Pemantauan ketat konsumsi bahan bakar (BBM) dan memastikan pengajuan amprahan bunker dikelola sebelum kondisi darurat.',
-      pic: 'Eko Wicaksono (Technical)',
-      progres: 0.25,
-      departemen: 'Technical',
-      dept_group: 'DEPARTEMEN TEKNIKAL & PERAWATAN'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'HARI INI',
-      kapal_proyek: 'Suku Cadang & Pompa',
-      isu_rangkuman: 'Follow up via telepon ke vendor/pioneer terkait konfirmasi penawaran harga pengadaan pompa dan suku cadang kapal.',
-      pic: 'Okvin Abrianto (Technical)',
-      progres: 0.0,
-      departemen: 'Technical',
-      dept_group: 'DEPARTEMEN TEKNIKAL & PERAWATAN'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'Urgent',
-      target_deadline: 'URGENT',
-      kapal_proyek: 'TB Syukur 14',
-      isu_rangkuman: 'Tindak lanjut pengadaan mendesak tali towing/tali tambat armada TB Syukur 14 untuk keselamatan kapal.',
-      pic: 'Capt. Edi & Tim Teknis',
-      progres: 0.0,
-      departemen: 'Technical',
-      dept_group: 'DEPARTEMEN TEKNIKAL & PERAWATAN'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'IN PROGRESS',
-      kapal_proyek: 'Dokumen CLC / WRC',
-      isu_rangkuman: 'Membantu pembaruan prosedur status shutdown dan kepatuhan regulasi sertifikat CLC / WRC.',
-      pic: 'Capt. Edi & Artikan',
-      progres: 0.25,
-      departemen: 'SOPAL',
-      dept_group: 'DEPARTEMEN SOPAL & LEGAL'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'URGENT',
-      kapal_proyek: 'LS 8 (Sea Safe 008)',
-      isu_rangkuman: 'Tindak lanjut penerbitan sertifikat asuransi kapal untuk LS 8, mencakup sertifikat CLC dan WRC.',
-      pic: 'Capt. Edi (Operasi & SOPAL)',
-      progres: 0.0,
-      departemen: 'SOPAL',
-      dept_group: 'DEPARTEMEN SOPAL & LEGAL'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'HARI INI / BESOK',
-      kapal_proyek: 'JP 17 (Jaya Perkasa 17)',
-      isu_rangkuman: 'Pemberian konfirmasi update kandidat Second Officer (Mualim II) untuk penempatan armada JP 17.',
-      pic: 'Herindra (Crewing)',
-      progres: 0.25,
-      departemen: 'Crewing',
-      dept_group: 'DEPARTEMEN CREWING & FINANCE'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'Urgent',
-      target_deadline: 'SEBELUM ONBOARD',
-      kapal_proyek: 'DP 17 (Jaya Perkasa 17)',
-      isu_rangkuman: 'Pemanggilan seluruh kru terpilih DP 17 ke kantor untuk induksi operasional dan pelatihan PMS online.',
-      pic: 'Capt. Edi & Crewing',
-      progres: 0.25,
-      departemen: 'Crewing',
-      dept_group: 'DEPARTEMEN CREWING & FINANCE'
-    },
-    {
-      status: 'On Progress',
-      prioritas: 'HIGH',
-      target_deadline: 'IN PROGRESS',
-      kapal_proyek: 'Premi MA & Asuransi Kapal',
-      isu_rangkuman: 'Tindak lanjut pembayaran premi Marine Asuransi serta koordinasi pengajuan invoice bersama Departemen Finance.',
-      pic: 'Capt. Edi & Finance',
-      progres: 0.25,
-      departemen: 'Finance',
-      dept_group: 'DEPARTEMEN CREWING & FINANCE'
+      departemen: 'Operasi & Logistik',
+      dept_group: 'DEPARTEMEN OPERASI & LOGISTIK'
     }
   ];
 }

@@ -44,7 +44,7 @@ export async function extractMeetingDetails(userMessage, senderName = '', { quot
   if (!isGeminiEnabled()) return null;
 
   const ai = getAiClient();
-  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const timeContext = getCurrentTimeContext();
 
   // Susun ringkasan jadwal rapat aktif agar AI bisa menjawab pertanyaan seputar jadwal rapat
@@ -89,6 +89,8 @@ Panduan Tugas:
      Jelaskan bahwa ada 2 alternatif solusi:
      1) Google Meet: Tanpa batasan 40 menit, resmi dan dibuatkan otomatis oleh bot jika pengguna mengetik "buatkan gmeet sekarang".
      2) Akun Zoom Cadangan / Gratisan: Bisa digunakan jika tetap ingin Zoom (maksimal 40 menit per sesi, pengguna cukup mengetik "zoom gratisan" untuk mendapatkan link).
+   - Jika pengguna bertanya tentang notula rapat, rekap kehadiran, B15M, atau ekspor file Excel (.xlsx):
+     Ketahuilah bahwa sistem BOT SUDAH MEMILIKI fitur otomatis penyusunan Notula & File Excel (.xlsx) khusus rapat pagi B15M (jam 08:00 WIB atau judul B15M). JANGAN pernah menjawab bahwa fitur Excel belum tersedia! Arahkan pengguna mengetik "rekap b15m" atau "notula excel" untuk meminta ulang file Excel hari ini.
    - Jika pengguna hanya menyapa atau bertanya hal lain, jawab dengan ramah dan jelaskan bantuan yang dapat Anda berikan sebagai asisten penjadwalan.
 `.trim();
 
@@ -183,7 +185,7 @@ export async function transcribeAudio(audioBuffer, mimeType = 'audio/ogg', sende
   if (!isGeminiEnabled() || !audioBuffer) return null;
 
   const ai = getAiClient();
-  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const cleanMime = mimeType ? mimeType.split(';')[0].trim() : 'audio/ogg';
 
   const callPromise = (async () => {
@@ -236,7 +238,7 @@ export async function extractMeetingFromAudio(audioBuffer, mimeType = 'audio/ogg
   if (!isGeminiEnabled() || !audioBuffer) return null;
 
   const ai = getAiClient();
-  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const timeContext = getCurrentTimeContext();
 
   // Bersihkan mimeType (hilangkan parameter codecs jika ada agar diterima Gemini)

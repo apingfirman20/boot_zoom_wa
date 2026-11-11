@@ -619,7 +619,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
       return { isHelpCommand: true, trigger: 'group_mention' };
     }
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|b15m)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m)/i.test(lower);
     if (!hasSpecificAction) {
       // Biarkan pertanyaan/percakapan mengalir ke Gemini AI interaktif
       return null;
@@ -632,7 +632,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
                        /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
                        /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
 
-    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|b15m)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m)/i.test(lower);
 
     if (isGreeting && !hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'private_greeting' };
@@ -657,17 +657,32 @@ export function parseSummaryCommand(messageText) {
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  const isB15M = /\bb15m\b|b 15 m|b-15m|b 15m/i.test(lower);
-  const isPrefix = /^[!/#](?:rekap|summary|notula|notulen|ringkasan)\b/i.test(lower);
-  const isNatural = /^(?:rekap(?:an)?|summary|notula|notulen|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|gmeet|google\s*meet|hasil|b15m|b\s*15m)?\b/i.test(lower) ||
-                    /^(?:rekap(?:an)?|summary|notula|notulen|ringkasan)$/i.test(lower) ||
-                    /^(?:minta\s+|kirim\s+|lihat\s+)?(?:rekap(?:an)?|summary|notula|notulen|ringkasan)\s+(?:meeting|rapat|zoom|gmeet|google\s*meet|b15m|b\s*15m)\b/i.test(lower) ||
-                    /^(?:buatkan\s+|kirimkan\s+)?(?:rekap|notula|notulen|excel|laporan)\s+b15m\b/i.test(lower) ||
-                    /^b15m$/i.test(lower);
-
-  if (!isPrefix && !isNatural && !isB15M) {
+  // Jangan cegat jika user sebenarnya ingin menjadwalkan meeting baru (mis. "buatkan zoom jam 10 bahas excel")
+  const looksLikeCreateSchedule = /\b(?:buatkan|bikin|jadwal(?:kan)?|pesan|booking)\s+(?:zoom|gmeet|google\s*meet|meet)\b/i.test(lower) ||
+                                  (/\b(?:zoom|gmeet|google\s*meet)\b/i.test(lower) && /\b(?:jam|pukul)\s+\d{1,2}/i.test(lower));
+  if (looksLikeCreateSchedule) {
     return null;
   }
+
+  const wantsExcel = /\b(?:excel(?:nya)?|xlsx|spreadsheet|xlxs)\b/i.test(lower);
+  const hasNotulaWord = /\b(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan|laporan)\b/i.test(lower);
+  const wantsToday = /\b(?:sekarang|hari\s+ini|today|skrg|tgl\s*(?:ini|sekarang)|tanggal\s+(?:ini|sekarang))\b/i.test(lower);
+
+  const isExplicitB15M = /\bb15m\b|b 15 m|b-15m|b 15m/i.test(lower);
+  const isPrefix = /^[!/#](?:rekap|summary|notula|notulan|notulensi|ringkasan|excel)\b/i.test(lower);
+
+  const isNatural = /^(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan)\s+(?:kehadiran|peserta|meeting|rapat|zoom|gmeet|google\s*meet|hasil|excel(?:nya)?|tanggal|hari\s+ini|b15m|b\s*15m)?\b/i.test(lower) ||
+                    /^(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan)$/i.test(lower) ||
+                    /\b(?:minta|kirim(?:kan)?|lihat|cek|buat(?:kan)?|mana|kasih|tolong|download|unduh|export|ekspor)\b\s+.*?\b(?:rekap(?:an)?|summary|notula|notulan|notulensi|ringkasan|excel(?:nya)?)\b/i.test(lower) ||
+                    (hasNotulaWord && (wantsExcel || wantsToday || /\b(?:meeting|rapat|zoom|gmeet|google\s*meet|kehadiran|peserta)\b/i.test(lower))) ||
+                    (wantsExcel && (wantsToday || /\b(?:mana|kirim(?:kan)?|buat(?:kan)?|minta|notula|notulan|notulensi|rekap|ringkasan|rapat|meeting|zoom|b15m)\b/i.test(lower))) ||
+                    /^b15m$/i.test(lower);
+
+  if (!isPrefix && !isNatural && !isExplicitB15M) {
+    return null;
+  }
+
+  const isB15M = isExplicitB15M || wantsExcel;
 
   // Cari apakah user menyertakan Meeting ID Zoom (angka 9-11 digit) atau Google Meet code (xxx-yyyy-zzz atau spaces/...)
   const zoomMatch = text.match(/\b(\d{9,11})\b/);
@@ -677,7 +692,9 @@ export function parseSummaryCommand(messageText) {
   return {
     isSummaryCommand: true,
     meetingId,
-    isB15M
+    isB15M,
+    wantsExcel,
+    wantsToday
   };
 }
 
