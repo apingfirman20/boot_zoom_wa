@@ -51,7 +51,7 @@ export async function extractMeetingDetails(userMessage, senderName = '', { quot
   const meetingsSummary = (activeMeetings || []).map((m, idx) => {
     const formatted = formatMeetingTime(m.startTime);
     const requester = m.requesterPhone ? m.requesterPhone.split('@')[0] : 'Tidak tercatat';
-    return `${idx + 1}. Topik: "${m.topic}", Platform: ${m.platform || 'ZOOM'}, Waktu: ${formatted}, Durasi: ${m.duration || 60} Menit, Nomor Pembuat: +${requester}, ID Meeting: ${m.id}`;
+    return `${idx + 1}. Topik: "${m.topic}", Platform: ${m.platform || 'ZOOM'}, Waktu: ${formatted}, Durasi: ${m.duration || 60} Menit, Nomor Pembuat: +${requester}, ID Meeting: ${m.id}, Link Join: ${m.joinUrl || '-'}${m.passcode ? `, Passcode: ${m.passcode}` : ''}`;
   }).join('\n');
 
   const systemInstruction = `
