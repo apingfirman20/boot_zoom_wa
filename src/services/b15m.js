@@ -119,6 +119,24 @@ export function formatB15MSheetName(dateInput = new Date()) {
 }
 
 /**
+ * Alias pencocokan nama peserta Zoom dengan nama resmi di B15M_ROSTER.
+ */
+const B15M_NAME_ALIASES = {
+  'w. hariyadi': ['wajdi', 'hariyadi', 'haryadi', 'whariyadi'],
+  'prandi marbun': ['prandi', 'marbun'],
+  'basyarudin': ['basyarudin', 'basyar'],
+  'anisah': ['anisah', 'anisa', 'annisa'],
+  'shanti': ['shanti', 'santi'],
+  'tiara s': ['tiara', 'tiara shinta'],
+  'artikan ndruru': ['artikan', 'ndruru'],
+  'davauzi': ['davauzi', 'vauzi', 'vauzi nur', 'fauzi'],
+  'yang mulyono': ['yang mulyono', 'yang muljono', 'mulyono', 'muljono'],
+  'rangga septian n': ['rangga', 'rangga septian'],
+  'f. hanindya fernandito': ['hanindya', 'fernandito', 'dito'],
+  'stephanus darell r': ['stephanus', 'darell', 'darel']
+};
+
+/**
  * Memetakan peserta Zoom aktual ke dalam daftar absensi per divisi.
  */
 export function mapB15MAttendance(actualParticipants = []) {
@@ -138,14 +156,20 @@ export function mapB15MAttendance(actualParticipants = []) {
     } else {
       const list = members.map(m => {
         const cleanM = m.replace(/\s*\([^)]*\)/g, '').trim();
+        const lowerCleanM = cleanM.toLowerCase();
         const compactM = compactStr(cleanM);
         const normTokens = normalizeSpaces(cleanM).split(' ').filter(t => t.length >= 3);
         const primaryToken = normTokens[0] || '';
+        const aliases = B15M_NAME_ALIASES[lowerCleanM] || [];
 
         const isPresent = actualNormalized.some(a =>
           (compactM.length >= 3 && a.compact.includes(compactM)) ||
           (a.compact.length >= 4 && compactM.includes(a.compact)) ||
-          (primaryToken.length >= 4 && a.norm.split(' ').some(w => w === primaryToken || w.startsWith(primaryToken)))
+          (primaryToken.length >= 4 && a.norm.split(' ').some(w => w === primaryToken || w.startsWith(primaryToken))) ||
+          aliases.some(al => {
+            const cAl = compactStr(al);
+            return cAl.length >= 4 && (a.compact.includes(cAl) || a.norm.split(' ').includes(al));
+          })
         );
         return isPresent ? `${m} (Hadir)` : m;
       });

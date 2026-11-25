@@ -1805,7 +1805,8 @@ async function startBot() {
         messageText.startsWith('📅') ||
         messageText.startsWith('🎬') ||
         messageText.startsWith('👋 Halo') ||
-        messageText.startsWith('Maaf ')
+        messageText.startsWith('Maaf Pak/Bu, terjadi kendala') ||
+        messageText.startsWith('Maaf Pak/Bu, tidak ditemukan')
       ) {
         continue;
       }
@@ -1924,8 +1925,21 @@ async function startBot() {
             matchedMeeting = activeMeetings[0];
           }
 
-          // Abaikan jika tidak ada meeting yang cocok atau tidak ada instruksi perubahan waktu/topik yang jelas
-          if (!matchedMeeting || (!editCmd.newStartTime && !editCmd.newTopic)) {
+          // Beri tahu user jika meeting yang dimaksud tidak ditemukan atau instruksi perubahan belum jelas
+          if (!matchedMeeting) {
+            const noEditMatch = `Mohon maaf Bapak/Ibu, tidak ditemukan jadwal meeting yang cocok untuk diubah.\nKetik *cek jadwal zoom* untuk melihat daftar jadwal yang masih aktif.`;
+            await sock.sendMessage(remoteJid, { text: noEditMatch }, { quoted: msg });
+            continue;
+          }
+          if (!editCmd.newStartTime && !editCmd.newTopic) {
+            continue;
+          }
+
+          // Cek otorisasi pengirim (khusus pembuat rapat atau nomor Admin)
+          const senderParticipant = msg.key.participant || remoteJid;
+          if (!isAuthorizedSender(senderParticipant, matchedMeeting)) {
+            const denyEdit = `Mohon maaf Bapak/Ibu, perubahan jadwal meeting hanya dapat dilakukan oleh pembuat rapat atau nomor Admin.`;
+            await sock.sendMessage(remoteJid, { text: denyEdit }, { quoted: msg });
             continue;
           }
 
@@ -2020,8 +2034,9 @@ async function startBot() {
             lines.push(``);
           });
 
-          lines.push(`_Untuk membatalkan jadwal, contoh: "hapus zoom jam ${new Date(validMeetings[0].startTime).getHours()}"_`);
-          lines.push(`_Untuk mengubah jadwal, contoh: "ubah zoom jam ${new Date(validMeetings[0].startTime).getHours()} jadi jam 4 sore"_`);
+          const firstMeetingHour = getDatePartsInTimezone(validMeetings[0].startTime, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta').hour;
+          lines.push(`_Untuk membatalkan jadwal, contoh: "hapus zoom jam ${firstMeetingHour}"_`);
+          lines.push(`_Untuk mengubah jadwal, contoh: "ubah zoom jam ${firstMeetingHour} jadi jam 4 sore"_`);
 
           await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg });
         } catch (listErr) {
@@ -2038,6 +2053,12 @@ async function startBot() {
         console.log(`\n🔍 [Perintah Cek Slot Kosong Masuk] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
         try {
           await sock.readMessages([msg.key]);
+
+          try {
+            await syncMeetingsWithZoom();
+          } catch (e) {
+            // Gunakan data lokal jika sync gagal
+          }
 
           const slotsData = getAvailableTimeSlots(emptySlotsCmd.dayOffset, process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
           const dayLabel = emptySlotsCmd.dayOffset === 0 ? 'Hari Ini' : (emptySlotsCmd.dayOffset === 1 ? 'Besok' : 'Lusa');
@@ -2575,22 +2596,6 @@ async function startBot() {
 
             await sock.sendMessage(remoteJid, { text: replySuccess }, { quoted: msg });
             console.log(`✅ Link Google Meet berhasil dikirim ke ${remoteJid}!`);
-
-            // 4. CEK APAKAH ADA MEETING BERIKUTNYA YANG BERJARAK 1-2 JAM
-            const nearbyMeeting = await getNearbyUpcomingMeeting(command.startTime, command.durationMinutes);
-            if (nearbyMeeting) {
-              const nearbyDate = new Date(nearbyMeeting.startTime);
-              const nearbyHour = new Intl.DateTimeFormat('id-ID', {
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false,
-                timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta'
-              }).format(nearbyDate);
-
-              const followUpText = `Pemberitahuan Jadwal: Pada pukul ${nearbyHour} WIB, akun Zoom akan dipergunakan untuk agenda *${nearbyMeeting.topic}*. Mohon dapat menyesuaikan durasi rapat. Terima kasih.`;
-              await sock.sendMessage(remoteJid, { text: followUpText });
-              console.log(`📢 Keterangan lanjutan jadwal terdekat berhasil dikirim: "${followUpText}"`);
-            }
           } catch (gmeetErr) {
             console.error('❌ Gagal membuat Google Meet:', gmeetErr.message);
             const isAuthError = gmeetErr.message.includes('invalid_grant') || gmeetErr.message.includes('kedaluwarsa');

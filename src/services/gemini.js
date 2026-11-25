@@ -41,6 +41,37 @@ export function isGeminiEnabled() {
  * }|null>}
  */
 /**
+ * Memanggil Gemini generateContent dengan fallback model otomatis bila terjadi 503 / 429 / 404.
+ */
+async function generateWithModelFallback(ai, requestParams) {
+  const candidates = Array.from(new Set([
+    requestParams.model,
+    process.env.GEMINI_MODEL,
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash'
+  ].filter(Boolean)));
+
+  let lastErr = null;
+  for (const model of candidates) {
+    try {
+      return await ai.models.generateContent({
+        ...requestParams,
+        model
+      });
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || '');
+      if (msg.includes('503') || msg.includes('429') || msg.includes('404') || msg.includes('UNAVAILABLE') || msg.includes('NOT_FOUND')) {
+        console.warn(`⚠️ Model ${model} sibuk/tidak tersedia, mencoba model cadangan...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Memformat daftar arsip notula & action items meeting terbaru menjadi konteks teks ringkas untuk Gemini AI.
  */
 function formatArchivesForPrompt(archives = [], maxEntries = 3) {
@@ -146,7 +177,7 @@ ${historyText ? `\nRIWAYAT PERCAKAPAN TERAKHIR DI CHAT INI:\n${historyText}` : '
   }
 
   const callPromise = (async () => {
-    const response = await ai.models.generateContent({
+    const response = await generateWithModelFallback(ai, {
       model: modelName,
       contents: userContent,
       config: {
@@ -235,7 +266,7 @@ export async function transcribeAudio(audioBuffer, mimeType = 'audio/ogg', sende
   const cleanMime = mimeType ? mimeType.split(';')[0].trim() : 'audio/ogg';
 
   const callPromise = (async () => {
-    const response = await ai.models.generateContent({
+    const response = await generateWithModelFallback(ai, {
       model: modelName,
       contents: [
         {
@@ -450,7 +481,7 @@ ATURAN MENJAWAB:
 8. Jika data untuk tanggal/topik yang diminta belum ada di arsip, jelaskan dengan jujur data mana yang saat ini tersedia.`;
 
   const callPromise = (async () => {
-    const response = await ai.models.generateContent({
+    const response = await generateWithModelFallback(ai, {
       model: modelName,
       contents: prompt
     });

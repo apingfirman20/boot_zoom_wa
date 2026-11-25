@@ -184,7 +184,7 @@ export function getMeetingsPendingRecording() {
 
   return meetings.filter(m => {
     if (!m.autoRecord || m.recordingSent) return false;
-    const start = new Date(m.startTime).getTime();
+    const start = parseToDate(m.startTime).getTime();
     // Hanya periksa meeting yang waktu mulainya sudah lewat (sudah berjalan / selesai)
     return now >= start;
   });
@@ -526,8 +526,7 @@ export function markMeetingReminderSent(meetingId) {
  */
 export function getAvailableTimeSlots(dayOffset = 0, timezone = process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta') {
   const nowParts = getNowInTimezone(timezone);
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + dayOffset);
+  const targetDate = new Date(Date.now() + dayOffset * 24 * 3600 * 1000);
   const targetParts = getDatePartsInTimezone(targetDate, timezone);
 
   const meetings = getActiveMeetings();
@@ -596,8 +595,8 @@ export function getAvailableTimeSlots(dayOffset = 0, timezone = process.env.DEFA
 
   const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
   const monthNames = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-  const dObj = new Date(targetParts.year, targetParts.month - 1, targetParts.day);
-  const dayName = dayNames[dObj.getDay()];
+  const utcDay = new Date(Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day)).getUTCDay();
+  const dayName = dayNames[utcDay];
   const formattedDate = `${dayName}, ${targetParts.day} ${monthNames[targetParts.month]} ${targetParts.year}`;
 
   return {

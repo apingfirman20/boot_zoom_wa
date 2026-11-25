@@ -130,10 +130,14 @@ export function getCurrentTimeContext(timezone = process.env.DEFAULT_TIMEZONE ||
     timeStyle: 'long'
   }).format(now);
 
+  const parts = getDatePartsInTimezone(now, timezone);
+  const todayDate = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+
   return {
     now,
     isoString: now.toISOString(),
     localString,
+    todayDate,
     timezone
   };
 }
