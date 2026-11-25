@@ -645,3 +645,70 @@ export async function getRecentEndedGoogleMeetings(limit = 3) {
   }));
 }
 
+/**
+ * Mengunggah file Excel (.xlsx) Notula B15M ke Google Drive secara otomatis
+ * menggunakan OAuth token Google yang aktif (jika memiliki izin Drive scope).
+ *
+ * @param {{ fileName: string, buffer: Buffer, folderId?: string }} options
+ * @returns {Promise<{ fileId: string, fileName: string, webViewLink: string }|null>}
+ */
+export async function uploadB15MExcelToGoogleDrive({
+  fileName,
+  buffer,
+  folderId = process.env.GOOGLE_DRIVE_FOLDER_ID || ''
+} = {}) {
+  if (!isGoogleConfigured() || !buffer || !fileName) return null;
+
+  try {
+    const accessToken = await getGoogleAccessToken();
+    const metadata = {
+      name: fileName,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    };
+    if (folderId && folderId.trim()) {
+      metadata.parents = [folderId.trim()];
+    }
+
+    const boundary = '-------b15mDriveBoundary' + Date.now();
+    const metaPart =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify(metadata)}\r\n`;
+    const fileHeader =
+      `--${boundary}\r\n` +
+      `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`;
+    const footer = `\r\n--${boundary}--`;
+
+    const bodyBuffer = Buffer.concat([
+      Buffer.from(metaPart, 'utf-8'),
+      Buffer.from(fileHeader, 'utf-8'),
+      Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer),
+      Buffer.from(footer, 'utf-8')
+    ]);
+
+    const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`
+      },
+      body: bodyBuffer
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const data = await res.json();
+    if (!data || !data.id) return null;
+
+    return {
+      fileId: data.id,
+      fileName: data.name || fileName,
+      webViewLink: data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`
+    };
+  } catch (err) {
+    return null;
+  }
+}
+

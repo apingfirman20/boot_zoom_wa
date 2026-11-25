@@ -623,7 +623,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
       return { isHelpCommand: true, trigger: 'group_mention' };
     }
 
-    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir|update|progres|progress|done|selesai|live)/i.test(lower);
     if (!hasSpecificAction) {
       // Biarkan pertanyaan/percakapan mengalir ke Gemini AI interaktif
       return null;
@@ -636,7 +636,7 @@ export function parseHelpCommand(messageText, { isGroup = false, isBotMentioned 
                        /^(?:halo|hai|hi|hello|permisi|assalamu['’]?alaikum)\b/i.test(lower) ||
                        /(?:mau\s+tanya|bisa\s+bantu|tolong\s+bantu|butuh\s+bantuan|gimana\s+caranya|apa\s+menu(?:nya)?)/i.test(lower);
 
-    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir)/i.test(lower);
+    const hasSpecificAction = /(?:buat|bikin|buatin|bikinin|jadwal|pesan|order|minta|booking|hapus|batal|cancel|delete|cek|lihat|daftar|list|ubah|ganti|edit|reschedule|geser|rekam|record|end\s+boy|akhiri|stop|hentikan|kosong|slot|rekap|notula|notulan|notulensi|excel|b15m|bahas|follow|tindak\s*lanjut|urgent|pic|hadir|update|progres|progress|done|selesai|live)/i.test(lower);
 
     if (isGreeting && !hasSpecificAction) {
       return { isHelpCommand: true, trigger: 'private_greeting' };
@@ -842,7 +842,7 @@ export function parseMeetingQaCommand(messageText) {
   const text = messageText.trim();
   const lower = text.toLowerCase();
 
-  // Jangan ambil alih jika ini perintah dokumen/rekap Excel, buat meeting, batal, edit, cek jadwal, atau free zoom
+  // Jangan ambil alih jika ini perintah dokumen/rekap Excel, buat meeting, batal, edit, cek jadwal, update item, cek live, atau free zoom
   if (
     parseSummaryCommand(text) ||
     parseCancelCommand(text) ||
@@ -851,7 +851,9 @@ export function parseMeetingQaCommand(messageText) {
     parseEmptySlotsCommand(text) ||
     parseFreeZoomCommand(text) ||
     parseLiveRecordCommand(text) ||
-    parseEndMeetingCommand(text)
+    parseEndMeetingCommand(text) ||
+    parseUpdateActionItemCommand(text) ||
+    parseLiveStatusCommand(text)
   ) {
     return null;
   }
@@ -887,6 +889,104 @@ export function parseMeetingQaCommand(messageText) {
     wantsToday,
     wantsYesterday,
     query: text
+  };
+}
+
+/**
+ * Parsing perintah update status / progres action item B15M via WhatsApp.
+ * Contoh:
+ * - "update RPK & SPP done"
+ * - "update progres Kasumi 75%"
+ * - "progres To Michel selesai"
+ * - "!update CP17 done"
+ *
+ * @param {string} messageText
+ * @returns {{ isUpdateActionItem: boolean, keyword: string, status: string, progres: number }|null}
+ */
+export function parseUpdateActionItemCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  // Jangan bentrok dengan perintah edit jadwal Zoom/Meet
+  if (parseEditCommand(text) || /\b(?:jadwal|zoom|gmeet|google\s*meet|link|jam\s+\d)\b/i.test(lower)) {
+    return null;
+  }
+
+  const prefixMatch = text.match(/^[!/#](?:update|progres|progress)\s+(.+)$/i);
+  const naturalMatch = text.match(/^(?:tolong\s+)?(?:update(?:\s+status|\s+progres|\s+progress)?|lapor\s+progres|set\s+status|progres|progress)\s+(?:item\s+|tindak\s*lanjut\s+|kapal\s+|proyek\s+)?(.+)$/i);
+
+  const rawRest = (prefixMatch && prefixMatch[1]) || (naturalMatch && naturalMatch[1]);
+  if (!rawRest) return null;
+
+  const pctMatch = rawRest.match(/\b(\d{1,3})\s*%/);
+  const isDone = /\b(?:done|selesai|beres|clear|complete|completed|100\s*%)\b/i.test(rawRest);
+  const isPending = /\b(?:pending|hold|tunda|tertunda|unggu)\b/i.test(rawRest);
+  const isProgress = /\b(?:on\s*progress|proses|jalan|lanjut)\b/i.test(rawRest) || Boolean(pctMatch);
+
+  if (!isDone && !isPending && !isProgress) {
+    return null;
+  }
+
+  let status = 'On Progress';
+  let progres = 0.5;
+
+  if (isDone) {
+    status = 'Done';
+    progres = 1.0;
+  } else if (isPending) {
+    status = 'Pending';
+    progres = pctMatch ? Math.min(100, parseInt(pctMatch[1], 10)) / 100 : 0.0;
+  } else if (pctMatch) {
+    const pct = Math.max(0, Math.min(100, parseInt(pctMatch[1], 10)));
+    progres = pct / 100;
+    status = pct >= 100 ? 'Done' : 'On Progress';
+  }
+
+  const keyword = rawRest
+    .replace(/\b(?:\d{1,3}\s*%|sudah|udah|jadi|menjadi|status(?:nya)?|progres(?:nya)?|progress(?:nya)?|done|selesai|beres|clear|complete|completed|pending|hold|tunda|tertunda|on\s*progress|proses)\b/gi, ' ')
+    .replace(/[:=\-_,]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!keyword || keyword.length < 2) return null;
+
+  return {
+    isUpdateActionItem: true,
+    keyword,
+    status,
+    progres
+  };
+}
+
+/**
+ * Parsing perintah cek status ruang Zoom secara real-time (apakah sedang ada meeting live).
+ * Contoh:
+ * - "cek zoom live", "status zoom sekarang", "siapa yang lagi pakai zoom?"
+ * - "apakah zoom sedang dipakai?", "zoom lagi dipakai gak?", "!live"
+ *
+ * @param {string} messageText
+ * @returns {{ isLiveStatusCommand: boolean }|null}
+ */
+export function parseLiveStatusCommand(messageText) {
+  if (!messageText || typeof messageText !== 'string') return null;
+  const text = messageText.trim();
+  const lower = text.toLowerCase();
+
+  if (parseEmptySlotsCommand(text) || parseListCommand(text)) {
+    return null;
+  }
+
+  const isPrefix = /^[!/#](?:live|zoomlive|statuszoom|cekzoom)\b/i.test(lower);
+  const isNatural =
+    /\b(?:cek|lihat|info|status)\s+(?:ruang\s+|akun\s+|room\s+)?zoom\s+(?:live|aktif|sekarang|saat\s+ini)\b/i.test(lower) ||
+    /\b(?:siapa\s+yang\s+(?:lagi|sedang)\s+(?:pakai|menggunakan|meeting\s+di|rapat\s+di)\s+zoom)\b/i.test(lower) ||
+    /\b(?:apakah\s+)?zoom\s+(?:lagi|sedang)\s+(?:dipakai|digunakan|live|aktif|ada\s+orang|ada\s+meeting)\b/i.test(lower);
+
+  if (!isPrefix && !isNatural) return null;
+
+  return {
+    isLiveStatusCommand: true
   };
 }
 

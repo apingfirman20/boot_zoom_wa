@@ -20,7 +20,9 @@ import {
   parseEndMeetingCommand,
   parseEmptySlotsCommand,
   parseFreeZoomCommand,
-  parseMeetingQaCommand
+  parseMeetingQaCommand,
+  parseUpdateActionItemCommand,
+  parseLiveStatusCommand
 } from './src/utils/parser.js';
 import {
   createZoomMeeting,
@@ -42,7 +44,8 @@ import {
   getGoogleMeetingParticipants,
   getGoogleMeetingRecordings,
   getGoogleMeetingSummary,
-  getRecentEndedGoogleMeetings
+  getRecentEndedGoogleMeetings,
+  uploadB15MExcelToGoogleDrive
 } from './src/services/gmeet.js';
 import {
   extractMeetingDetails,
@@ -76,7 +79,9 @@ import {
   markMeetingReminderSent,
   getAvailableTimeSlots,
   saveMeetingArchive,
-  getMeetingArchives
+  getMeetingArchives,
+  updateB15MActionItemStatus,
+  getPendingUrgentB15MItems
 } from './src/services/schedule.js';
 import {
   isB15MMeeting,
@@ -86,7 +91,8 @@ import {
   formatB15MWhatsAppMessage,
   getDefaultB15MActionItems,
   formatB15MFileDate,
-  formatB15MDate
+  formatB15MDate,
+  mergeCarryOverActionItems
 } from './src/services/b15m.js';
 
 import fs from 'fs';
@@ -94,7 +100,7 @@ import path from 'path';
 import util from 'util';
 
 const STORAGE_DIR = process.env.STORAGE_DIR || '.';
-const AUTH_FOLDER = path.join(STORAGE_DIR, 'auth_info_baileys');
+const AUTH_FOLDER = process.env.AUTH_DIR || path.join(STORAGE_DIR, 'auth_info_baileys');
 let globalSock = null;
 let latestQr = null;
 let botStatus = 'connecting'; // 'connecting', 'waiting_qr', 'connected', 'disconnected'
@@ -594,6 +600,8 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
 
     const meetingDate = startTime ? parseToDate(startTime) : new Date();
     const fileDateStr = formatB15MFileDate(meetingDate);
+    const previousArchives = getMeetingArchives(10);
+    actionItems = mergeCarryOverActionItems(actionItems, previousArchives, fileDateStr);
 
     // Arsipkan ringkasan & action items B15M untuk kebutuhan tanya-jawab (Q&A) via WA
     saveMeetingArchive({
@@ -628,7 +636,7 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
       await globalSock.sendMessage(targetPhone, { text: b15mMsg });
       console.log(`✅ Pesan notula WhatsApp B15M berhasil dikirim ke ${targetPhone}!`);
 
-      // Buat file Excel (.xlsx) resmi B15M
+      // Buat file Excel (.xlsx) resmi B15M (Multi-Tab Kumulatif + Auto-Upload Google Drive jika aktif)
       try {
         const excelBuffer = await generateB15MExcelBuffer({
           meetingDate,
@@ -636,15 +644,28 @@ async function sendMeetingEndedSummary(meetingId, webhookObject = null, targetRe
           facilitator: 'Wajdi Hariyadi',
           meetingTitle: b15mTopic,
           actionItems,
-          actualParticipants: participants
+          actualParticipants: participants,
+          previousArchives
         });
 
         const fileName = `Notula_B15M_${fileDateStr}.xlsx`;
+        const fileBuf = Buffer.from(excelBuffer);
+
+        let driveInfo = null;
+        try {
+          driveInfo = await uploadB15MExcelToGoogleDrive({ fileName, buffer: fileBuf });
+          if (driveInfo?.webViewLink) {
+            console.log(`☁️ File Excel B15M berhasil diunggah ke Google Drive: ${driveInfo.webViewLink}`);
+          }
+        } catch (driveErr) {
+          // Abaikan jika token Google belum punya scope Drive
+        }
 
         await globalSock.sendMessage(targetPhone, {
-          document: Buffer.from(excelBuffer),
+          document: fileBuf,
           mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          fileName: fileName
+          fileName: fileName,
+          caption: driveInfo?.webViewLink ? `☁️ *Tersimpan otomatis di Google Drive:*\n${driveInfo.webViewLink}` : undefined
         });
         console.log(`📎 File Excel B15M ${fileName} berhasil dikirim ke ${targetPhone}`);
       } catch (excelErr) {
@@ -1239,10 +1260,60 @@ async function pollPendingAiSummaries() {
   }
 }
 
+let lastAfternoonDigestDate = '';
+
+/**
+ * Pengingat sore otomatis (pukul 16:00 WIB) untuk menagih progres item B15M
+ * berprioritas Urgent / High / Target Hari Ini yang masih belum selesai (Done).
+ */
+async function pollAfternoonB15MDigest() {
+  if (!globalSock) return;
+  const parts = getDatePartsInTimezone(new Date(), process.env.DEFAULT_TIMEZONE || 'Asia/Jakarta');
+  // Jalankan pada rentang pukul 16:00 - 16:30 WIB sekali sehari
+  if (parts.hour !== 16 || parts.minute > 30) return;
+
+  const todayWibStr = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  if (lastAfternoonDigestDate === todayWibStr) return;
+
+  const { archive, items } = getPendingUrgentB15MItems(todayWibStr);
+  if (!archive || items.length === 0) return;
+
+  const scheduled = getScheduledMeetingById(archive.id);
+  const targetPhone = scheduled?.requesterPhone || process.env.DEFAULT_NOTIFICATION_PHONE || process.env.ADMIN_PHONE;
+  if (!targetPhone) return;
+
+  lastAfternoonDigestDate = todayWibStr;
+
+  const lines = [
+    `⏰ *PENGINGAT SORE: TINDAK LANJUT B15M (${formatB15MDate(new Date())})*`,
+    `Berikut daftar *${items.length} item prioritas (Urgent / High / Target Hari Ini)* dari rapat B15M pagi tadi yang masih berstatus *On Progress / Open*:`,
+    ``
+  ];
+
+  items.slice(0, 12).forEach((it, idx) => {
+    const pct = Math.round((Number(it.progres) || 0) * 100);
+    lines.push(`${idx + 1}. *[${it.prioritas || 'HIGH'} | ${it.target_deadline || 'HARI INI'}]* *${it.kapal_proyek || 'Operasional'}* — ${it.isu_rangkuman}`);
+    lines.push(`   👤 PIC: *${it.pic || '-'}* | Status: _${it.status || 'On Progress'} (${pct}%)_`);
+  });
+
+  lines.push(``);
+  lines.push(`💡 _Untuk memperbarui progres lewat chat, ketik contoh:_`);
+  lines.push(`• *"update ${items[0]?.kapal_proyek || 'Kasumi'} done"*`);
+  lines.push(`• *"progres ${items[0]?.kapal_proyek || 'Kasumi'} 75%"*`);
+
+  try {
+    await globalSock.sendMessage(targetPhone, { text: lines.join('\n') });
+    console.log(`⏰ [Digest Sore B15M] Pengingat ${items.length} item urgent berhasil dikirim ke ${targetPhone}`);
+  } catch (err) {
+    console.error('Gagal mengirim pengingat sore B15M:', err.message);
+  }
+}
+
 // Cek status rekap & notula meeting yang selesai setiap 2 menit
 setInterval(() => {
   pollPendingSummaries().catch(() => {});
   pollPendingAiSummaries().catch(() => {});
+  pollAfternoonB15MDigest().catch(() => {});
 }, 2 * 60 * 1000);
 
 
@@ -1778,12 +1849,14 @@ async function startBot() {
       // Proteksi Grup: Di dalam grup WhatsApp, abaikan obrolan biasa yang BUKAN tentang meeting/jadwal/slot kosong
       // jika bot tidak di-tag/di-mention langsung oleh anggota grup (mencegah bot ikut-ikutan obrolan lain)
       if (isGroup && !isBotMentioned && !isVoiceNote && !isQuotedBot) {
-        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|b\s*15m|rekap|notula|notulan|notulensi|follow\s*-?\s*up|tindak\s*lanjut|gratis|cadangan|free)/i.test(cleanText) ||
+        const hasMeetingContext = /(?:zoom|gmeet|google\s+meet|\bmeet\b|meeting|miting|jadwal|rapat|kosong|slot|b15m|b\s*15m|rekap|notula|notulan|notulensi|follow\s*-?\s*up|tindak\s*lanjut|update|progres|progress|gratis|cadangan|free)/i.test(cleanText) ||
                                   /^[!/#]/.test(cleanText) ||
                                   Boolean(parseEmptySlotsCommand(cleanText)) ||
                                   Boolean(parseFreeZoomCommand(cleanText)) ||
                                   Boolean(parseSummaryCommand(cleanText)) ||
-                                  Boolean(parseMeetingQaCommand(cleanText));
+                                  Boolean(parseMeetingQaCommand(cleanText)) ||
+                                  Boolean(parseUpdateActionItemCommand(cleanText)) ||
+                                  Boolean(parseLiveStatusCommand(cleanText));
         if (!hasMeetingContext) {
           continue; // Lewati obrolan biasa antar anggota grup agar bot tidak ikut-ikutan
         }
@@ -2409,6 +2482,106 @@ async function startBot() {
           await sock.sendMessage(remoteJid, {
             text: `Maaf Pak/Bu, terjadi kendala saat mengambil ringkasan rapat: ${qaErr.message}`
           }, { quoted: msg });
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // F3. UPDATE STATUS / PROGRES ACTION ITEM B15M ("update RPK & SPP done", "progres Kasumi 75%")
+      // -----------------------------------------------------------------------
+      const updateItemCmd = parseUpdateActionItemCommand(cleanText);
+      if (updateItemCmd) {
+        console.log(`\n📝 [Update Action Item B15M] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+          if (getMeetingArchives(5).length === 0) {
+            await ensureRecentMeetingArchives({ wantsToday: true });
+          }
+
+          const res = updateB15MActionItemStatus({
+            keyword: updateItemCmd.keyword,
+            status: updateItemCmd.status,
+            progres: updateItemCmd.progres
+          });
+
+          if (res.updated && res.item) {
+            const pct = Math.round((Number(res.item.progres) || 0) * 100);
+            const replyUpdate = [
+              `✅ *Status Tindak Lanjut B15M Berhasil Diperbarui!*`,
+              ``,
+              `🚢 *Kapal / Proyek:* ${res.item.kapal_proyek || '-'}`,
+              `📌 *Isu / Tugas:* ${res.item.isu_rangkuman || '-'}`,
+              `👤 *PIC:* ${res.item.pic || '-'}`,
+              `📊 *Status Baru:* *${res.item.status}* (*${pct}%*)`,
+              `📅 *Arsip Rapat:* ${res.archiveDate || '-'}`,
+              ``,
+              `_Perubahan ini telah disimpan dan akan otomatis tampil pada file Excel B15M berikutnya (ketik *notula excel* untuk mengunduh Excel terbaru)._`
+            ].join('\n');
+            await sock.sendMessage(remoteJid, { text: replyUpdate }, { quoted: msg });
+          } else {
+            const replyNotFound = `Mohon maaf Bapak/Ibu, tidak ditemukan item tindak lanjut B15M dengan kata kunci *"${updateItemCmd.keyword}"* pada arsip rapat terbaru.\nKetik *tindak lanjut hari ini apa aja* untuk melihat daftar proyek/kapal yang terdaftar.`;
+            await sock.sendMessage(remoteJid, { text: replyNotFound }, { quoted: msg });
+          }
+        } catch (upErr) {
+          console.error('❌ Error update action item B15M:', upErr.message);
+        }
+        continue;
+      }
+
+      // -----------------------------------------------------------------------
+      // F4. CEK STATUS RUANG ZOOM REAL-TIME ("cek zoom live", "siapa yang lagi pakai zoom?")
+      // -----------------------------------------------------------------------
+      const liveStatusCmd = parseLiveStatusCommand(cleanText);
+      if (liveStatusCmd) {
+        console.log(`\n📡 [Cek Status Live Zoom] Dari: ${senderName} (${remoteJid}): "${cleanText}"`);
+        try {
+          await sock.readMessages([msg.key]);
+          const liveMeetings = await getLiveZoomMeetings();
+          const localLive = getCurrentLiveMeeting();
+
+          if (liveMeetings.length > 0) {
+            const lm = liveMeetings[0];
+            const startFormatted = lm.startTime ? formatMeetingTime(lm.startTime) : '-';
+            let runningMins = 0;
+            if (lm.startTime) {
+              const diff = Date.now() - parseToDate(lm.startTime).getTime();
+              if (diff > 0) runningMins = Math.round(diff / 60000);
+            }
+            const replyLiveStatus = [
+              `🔴 *STATUS AKUN ZOOM UTAMA: SEDANG DIPAKAI (LIVE)*`,
+              ``,
+              `📌 *Topik Rapat:* ${lm.topic}`,
+              `🆔 *Meeting ID:* ${lm.id}`,
+              `🗓️ *Mulai Sejak:* ${startFormatted}`,
+              runningMins > 0 ? `⏱️ *Durasi Berjalan:* ~${runningMins} Menit` : null,
+              ``,
+              `💡 _Jika ingin mengadakan rapat lain secara bersamaan sekarang, Anda dapat menggunakan:_`,
+              `1️⃣ *Google Meet* (ketik: _"buatkan gmeet sekarang"_)`,
+              `2️⃣ *Zoom Cadangan / Gratisan* (ketik: _"zoom gratisan"_)`
+            ].filter(Boolean).join('\n');
+            await sock.sendMessage(remoteJid, { text: replyLiveStatus }, { quoted: msg });
+          } else if (localLive && localLive.platform !== 'GMEET') {
+            const replyScheduledNow = [
+              `🟡 *STATUS AKUN ZOOM UTAMA: TERJADWAL SAAT INI (BELUM ADA HOST/PESERTA LIVE)*`,
+              ``,
+              `📌 *Agenda Terjadwal:* ${localLive.topic}`,
+              `🗓️ *Waktu:* ${formatMeetingTime(localLive.startTime)}`,
+              `🆔 *Meeting ID:* ${localLive.id}`,
+              ``,
+              `_Di server Zoom belum terdeteksi peserta yang masuk, namun jam ini sudah dibooking untuk agenda di atas._`
+            ].join('\n');
+            await sock.sendMessage(remoteJid, { text: replyScheduledNow }, { quoted: msg });
+          } else {
+            const replyIdle = [
+              `🟢 *STATUS AKUN ZOOM UTAMA: KOSONG (SIAP DIGUNAKAN)*`,
+              ``,
+              `Saat ini tidak ada rapat yang sedang berlangsung (live) di akun Zoom utama.`,
+              `💡 _Ketik *"buatkan zoom sekarang topik [nama rapat]"* untuk langsung membuat link Zoom._`
+            ].join('\n');
+            await sock.sendMessage(remoteJid, { text: replyIdle }, { quoted: msg });
+          }
+        } catch (liveStErr) {
+          console.error('❌ Error mengecek status live Zoom:', liveStErr.message);
         }
         continue;
       }

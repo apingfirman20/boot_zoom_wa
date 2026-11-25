@@ -387,10 +387,56 @@ export function getDefaultB15MActionItems() {
 }
 
 /**
- * Menghasilkan file Excel (.xlsx) Notula Rapat & Pelacak Tindak Lanjut B15M
- * dengan format, styling, warna, dan struktur yang identik dengan B15M.xlsx.
+ * Menggabungkan item tindak lanjut hari ini dengan carry-over item yang belum selesai (On Progress / Open)
+ * dari arsip rapat B15M hari sebelumnya agar tidak ada tindak lanjut yang terlewat.
  */
-export async function generateB15MExcelBuffer({
+export function mergeCarryOverActionItems(todayItems = [], previousArchives = [], todayDateWib = '') {
+  if (!Array.isArray(todayItems) || todayItems.length === 0) return todayItems;
+  const isPlaceholderOnly = todayItems.length === 1 && /Notula Zoom AI Rapat B15M/i.test(todayItems[0]?.kapal_proyek || '');
+  if (isPlaceholderOnly) return todayItems;
+
+  const prevB15M = (previousArchives || []).find(a =>
+    a && a.isB15M &&
+    (!todayDateWib || a.dateWib !== todayDateWib) &&
+    Array.isArray(a.actionItems) &&
+    a.actionItems.length > 0 &&
+    !a.actionItems.some(it => /Notula Zoom AI Rapat B15M/i.test(it.kapal_proyek || ''))
+  );
+
+  if (!prevB15M) return todayItems;
+
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const existingProjects = todayItems.map(it => norm(it.kapal_proyek));
+  const existingIssues = todayItems.map(it => norm(it.isu_rangkuman));
+
+  const carryOvers = [];
+  for (const oldItem of prevB15M.actionItems) {
+    const isDone = (Number(oldItem.progres) >= 1) || /\b(?:done|selesai|100%|closed|complete)\b/i.test(oldItem.status || '');
+    if (isDone) continue;
+
+    const oldProj = norm(oldItem.kapal_proyek);
+    const oldIssue = norm(oldItem.isu_rangkuman);
+    if (!oldProj && !oldIssue) continue;
+
+    const alreadyCovered = existingProjects.some(p => p && oldProj && (p.includes(oldProj) || oldProj.includes(p))) ||
+                           existingIssues.some(iss => iss && oldIssue && iss.slice(0, 35) === oldIssue.slice(0, 35));
+    if (alreadyCovered) continue;
+
+    const cleanDeadline = String(oldItem.target_deadline || 'IN PROGRESS').replace(/\s*\(Carry-Over.*\)/i, '');
+    carryOvers.push({
+      ...oldItem,
+      target_deadline: `${cleanDeadline} (Carry-Over ${prevB15M.dateWib || ''})`.trim()
+    });
+    if (carryOvers.length >= 6) break;
+  }
+
+  return [...todayItems, ...carryOvers];
+}
+
+/**
+ * Mengisi satu worksheet B15M dengan format, styling, warna, dan struktur B15M.xlsx.
+ */
+function populateB15MWorksheet(ws, {
   meetingDate = new Date(),
   timeRange = '08:00 - 08:30 WIB',
   facilitator = 'Wajdi Hariyadi',
@@ -398,15 +444,6 @@ export async function generateB15MExcelBuffer({
   actionItems = [],
   actualParticipants = []
 }) {
-  const wb = new ExcelJS.Workbook();
-  wb.creator = 'Seven Oceans - BOT AI ZOOM';
-  wb.created = new Date();
-
-  const sheetName = formatB15MSheetName(meetingDate);
-  const ws = wb.addWorksheet(sheetName, {
-    views: [{ showGridLines: true }]
-  });
-
   // Lebar Kolom
   ws.columns = [
     { key: 'colA', width: 4 },
@@ -669,6 +706,68 @@ export async function generateB15MExcelBuffer({
     setCellStyle(`I${currentRow}`, { val: ship.division, sz: 9, fill: fillRow, hAlign: 'center' });
 
     currentRow++;
+  }
+}
+
+/**
+ * Menghasilkan file Excel (.xlsx) Notula Rapat & Pelacak Tindak Lanjut B15M
+ * dengan dukungan multi-tab kumulatif dari arsip hari-hari sebelumnya.
+ */
+export async function generateB15MExcelBuffer({
+  meetingDate = new Date(),
+  timeRange = '08:00 - 08:30 WIB',
+  facilitator = 'Wajdi Hariyadi',
+  meetingTitle = 'B15M - Fleet & Operations Sync (Koordinasi Armada & Tindak Lanjut)',
+  actionItems = [],
+  actualParticipants = [],
+  previousArchives = []
+}) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Seven Oceans - BOT AI ZOOM';
+  wb.created = new Date();
+
+  const usedSheetNames = new Set();
+  const primarySheetName = formatB15MSheetName(meetingDate);
+  usedSheetNames.add(primarySheetName);
+
+  const primaryWs = wb.addWorksheet(primarySheetName, {
+    views: [{ showGridLines: true }]
+  });
+  populateB15MWorksheet(primaryWs, {
+    meetingDate,
+    timeRange,
+    facilitator,
+    meetingTitle,
+    actionItems,
+    actualParticipants
+  });
+
+  // Tambahkan tab riwayat B15M hari-hari sebelumnya (maksimal 6 tab riwayat)
+  if (Array.isArray(previousArchives) && previousArchives.length > 0) {
+    let addedHistoryTabs = 0;
+    for (const arch of previousArchives) {
+      if (!arch || !arch.isB15M || !Array.isArray(arch.actionItems) || arch.actionItems.length === 0) continue;
+      const archDate = arch.startTime ? parseToDate(arch.startTime, 'Asia/Jakarta') : new Date();
+      const tabName = formatB15MSheetName(archDate);
+      if (usedSheetNames.has(tabName)) continue;
+
+      usedSheetNames.add(tabName);
+      const histWs = wb.addWorksheet(tabName, {
+        views: [{ showGridLines: true }]
+      });
+      const histParticipants = (arch.participants || []).map(p => typeof p === 'string' ? { name: p } : p);
+      populateB15MWorksheet(histWs, {
+        meetingDate: archDate,
+        timeRange: '08:00 - 08:30 WIB',
+        facilitator: 'Wajdi Hariyadi',
+        meetingTitle: arch.topic || meetingTitle,
+        actionItems: arch.actionItems,
+        actualParticipants: histParticipants
+      });
+
+      addedHistoryTabs++;
+      if (addedHistoryTabs >= 6) break;
+    }
   }
 
   return await wb.xlsx.writeBuffer();

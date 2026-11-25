@@ -694,5 +694,89 @@ export function getMeetingArchives(limit = 10, { dateWib = null } = {}) {
   }
 }
 
+/**
+ * Memperbarui status atau persentase progres dari suatu action item B15M di arsip terbaru.
+ *
+ * @param {{ keyword: string, status?: string, progres?: number, dateWib?: string }} options
+ * @returns {{ updated: boolean, item?: object, archiveDate?: string, topic?: string }}
+ */
+export function updateB15MActionItemStatus({ keyword, status = null, progres = null, dateWib = null } = {}) {
+  if (!keyword || typeof keyword !== 'string') return { updated: false };
+  ensureArchivesFile();
+  try {
+    const raw = fs.readFileSync(ARCHIVES_FILE, 'utf-8');
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list) || list.length === 0) return { updated: false };
+
+    const normKey = keyword.toLowerCase().trim();
+    const keyTokens = normKey.split(/\s+/).filter(t => t.length >= 2);
+
+    for (const arch of list) {
+      if (dateWib && arch.dateWib !== dateWib) continue;
+      if (!Array.isArray(arch.actionItems) || arch.actionItems.length === 0) continue;
+
+      let matchedItem = arch.actionItems.find(it => {
+        const hay = `${it.kapal_proyek || ''} ${it.isu_rangkuman || ''} ${it.pic || ''}`.toLowerCase();
+        return hay.includes(normKey);
+      });
+
+      if (!matchedItem && keyTokens.length > 0) {
+        matchedItem = arch.actionItems.find(it => {
+          const hay = `${it.kapal_proyek || ''} ${it.isu_rangkuman || ''} ${it.pic || ''}`.toLowerCase();
+          return keyTokens.every(t => hay.includes(t));
+        });
+      }
+
+      if (matchedItem) {
+        if (status) matchedItem.status = status;
+        if (progres !== null && progres !== undefined && Number.isFinite(Number(progres))) {
+          matchedItem.progres = Math.max(0, Math.min(1, Number(progres)));
+        }
+        arch.updatedAt = new Date().toISOString();
+        fs.writeFileSync(ARCHIVES_FILE, JSON.stringify(list, null, 2), 'utf-8');
+        return {
+          updated: true,
+          item: matchedItem,
+          archiveDate: arch.dateWib,
+          topic: arch.topic
+        };
+      }
+    }
+    return { updated: false };
+  } catch (err) {
+    console.error('Gagal update status action item B15M:', err.message);
+    return { updated: false };
+  }
+}
+
+/**
+ * Mengambil daftar action item B15M yang berprioritas Urgent/High atau bertenggat Hari Ini
+ * yang belum berstatus Done (progres < 100%) untuk pengingat sore.
+ */
+export function getPendingUrgentB15MItems(dateWib = null) {
+  const archives = getMeetingArchives(10, dateWib ? { dateWib } : {});
+  const targetArch = archives.find(a =>
+    a.isB15M &&
+    Array.isArray(a.actionItems) &&
+    a.actionItems.length > 0 &&
+    !a.actionItems.some(it => /Notula Zoom AI Rapat B15M/i.test(it.kapal_proyek || ''))
+  );
+
+  if (!targetArch) return { archive: null, items: [] };
+
+  const pending = targetArch.actionItems.filter(it => {
+    const isDone = Number(it.progres) >= 1 || /\b(?:done|selesai|100%|closed)\b/i.test(it.status || '');
+    if (isDone) return false;
+    const isHighPrio = /urgent|high/i.test(it.prioritas || '');
+    const isTodayTarget = /hari\s*ini|urgent|pukul|\d{1,2}[:.]\d{2}/i.test(it.target_deadline || '');
+    return isHighPrio || isTodayTarget;
+  });
+
+  return {
+    archive: targetArch,
+    items: pending
+  };
+}
+
 
 
